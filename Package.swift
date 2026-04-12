@@ -8,6 +8,10 @@ let package = Package(
         .executableTarget(
             name: "LayoutSwitcher",
             path: "Sources/LayoutSwitcher",
+            resources: [
+                .copy("Resources/en_words.txt"),
+                .copy("Resources/ua_words.txt"),
+            ],
             linkerSettings: [
                 .linkedFramework("Carbon"),
                 .linkedFramework("Cocoa"),

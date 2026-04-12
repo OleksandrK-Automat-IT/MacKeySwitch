@@ -1,189 +1,127 @@
 import Foundation
 
+/// 3-stage detection algorithm (like PuntoSwitcher / xneur):
+///   Stage 1: Check exception list (user overrides, self-learned words)
+///   Stage 2: Check dictionaries (50k EN + 50k UA word files + NSSpellChecker)
+///   Stage 3: Impossible bigram analysis (proto-language rules)
 struct LanguageDetector {
-    // Common English words (lowercase)
-    static let englishWords: Set<String> = [
-        "the", "be", "to", "of", "and", "a", "in", "that", "have", "i",
-        "it", "for", "not", "on", "with", "he", "as", "you", "do", "at",
-        "this", "but", "his", "by", "from", "they", "we", "say", "her", "she",
-        "or", "an", "will", "my", "one", "all", "would", "there", "their", "what",
-        "so", "up", "out", "if", "about", "who", "get", "which", "go", "me",
-        "when", "make", "can", "like", "time", "no", "just", "him", "know", "take",
-        "people", "into", "year", "your", "good", "some", "could", "them", "see", "other",
-        "than", "then", "now", "look", "only", "come", "its", "over", "think", "also",
-        "back", "after", "use", "two", "how", "our", "work", "first", "well", "way",
-        "even", "new", "want", "because", "any", "these", "give", "day", "most", "us",
-        "is", "are", "was", "were", "been", "has", "had", "did", "does", "am",
-        "let", "may", "should", "must", "shall", "here", "where", "why", "yes", "no",
-        "while", "each", "made", "find", "more", "long", "very", "after", "before", "much",
-        "still", "between", "own", "under", "never", "last", "few", "same", "another", "name",
-        "please", "help", "hello", "world", "test", "file", "code", "data", "home", "page",
-        "open", "close", "save", "delete", "create", "update", "start", "stop", "run", "end",
-        "true", "false", "null", "void", "class", "func", "var", "let", "const", "return",
-        "import", "export", "public", "private", "static", "final", "switch", "case", "break",
-        "error", "warning", "info", "debug", "system", "user", "admin", "server", "client",
-        "table", "select", "from", "where", "insert", "value", "key", "index", "type",
-    ]
+    private static let dict = DictionaryManager.shared
 
-    // Common Ukrainian words (lowercase)
-    static let ukrainianWords: Set<String> = [
-        "і", "в", "не", "на", "що", "з", "як", "це", "до", "та",
-        "у", "він", "я", "його", "за", "від", "але", "вона", "все", "вже",
-        "ми", "той", "бути", "ще", "по", "так", "було", "при", "їх", "тут",
-        "ні", "коли", "їй", "мене", "тому", "вони", "був", "час", "для", "через",
-        "може", "дуже", "треба", "тоді", "можна", "без", "якщо", "нам", "нас", "лише",
-        "або", "між", "після", "себе", "також", "свій", "перед", "день", "під", "над",
-        "рік", "раз", "їм", "ось", "саме", "чи", "там", "тепер", "навіть", "менше",
-        "навколо", "більше", "добре", "потім", "один", "два", "три", "перший", "новий",
-        "великий", "людина", "людей", "дім", "місто", "робота", "слово", "справа", "життя",
-        "країна", "друг", "рука", "місце", "голова", "кінець", "питання", "стати", "знати",
-        "хочу", "думати", "говорити", "йти", "дати", "мати", "зробити", "працювати", "взяти",
-        "привіт", "добрий", "ранок", "вечір", "дякую", "будь", "ласка", "так", "ні",
-        "який", "яка", "яке", "які", "цей", "ця", "ці", "той", "та", "ті",
-        "де", "куди", "звідки", "чому", "скільки", "хто", "що", "як", "коли",
-        "дуже", "багато", "мало", "завжди", "ніколи", "часто", "іноді", "зараз", "потім",
-    ]
+    // MARK: - Early Detection (after 3rd char, real-time)
 
-    // Common English bigrams
-    static let englishBigrams: Set<String> = [
-        "th", "he", "in", "er", "an", "re", "on", "at", "en", "nd",
-        "ti", "es", "or", "te", "of", "ed", "is", "it", "al", "ar",
-        "st", "to", "nt", "ng", "se", "ha", "as", "ou", "io", "le",
-        "ve", "co", "me", "de", "hi", "ri", "ro", "ic", "ne", "ea",
-        "ra", "ce", "li", "ch", "ll", "be", "ma", "si", "om", "ur",
-    ]
+    /// Analyze partial word in real-time. Uses impossible bigrams for fast rejection.
+    /// Returns intended language if wrong layout detected, nil if OK or uncertain.
+    static func detectEarly(
+        keycodes: [(UInt16, Bool)],
+        currentLayout: Language,
+        settings: SettingsModel?
+    ) -> Language? {
+        let enText = KeyMapping.reconstruct(keycodes: keycodes, language: .english)
+        let uaText = KeyMapping.reconstruct(keycodes: keycodes, language: .ukrainian)
 
-    // Common Ukrainian bigrams
-    static let ukrainianBigrams: Set<String> = [
-        "на", "но", "ні", "не", "ра", "ро", "ре", "ри", "ів", "ій",
-        "ст", "та", "то", "ти", "те", "пр", "по", "пе", "ко", "ка",
-        "ку", "ві", "во", "ва", "за", "зн", "ла", "ло", "ли", "ле",
-        "да", "до", "де", "ди", "ми", "мо", "ма", "ме", "ен", "ер",
-        "ал", "ан", "ор", "от", "об", "ос", "ів", "ін", "іс", "ій",
-        "го", "ге", "ся", "сь", "ть", "чи", "че", "що", "як", "юч",
-    ]
-
-    /// Score a word for how likely it is English (higher = more likely EN)
-    static func scoreEnglish(_ word: String) -> Double {
-        let lower = word.lowercased()
-        var score: Double = 0
-
-        // All characters are Latin
-        let isLatin = lower.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber) }
-        if !isLatin { return -100 }
-
-        // Dictionary match
-        if englishWords.contains(lower) {
-            score += 50
+        // Stage 1: Exception list — never correct these
+        if let settings = settings {
+            if settings.isException(enText) || settings.isException(uaText) {
+                return nil
+            }
         }
 
-        // Bigram analysis
-        if lower.count >= 2 {
-            let chars = Array(lower)
-            var bigramHits = 0
-            for i in 0..<(chars.count - 1) {
-                let bigram = String(chars[i...i+1])
-                if englishBigrams.contains(bigram) {
-                    bigramHits += 1
+        switch currentLayout {
+        case .english:
+            // Currently English layout → typed text is Latin (enText)
+            // Check: does enText contain impossible English bigrams?
+            // AND does the Ukrainian reconstruction (uaText) look plausible?
+            let enImpossible = ProtoLanguage.hasImpossibleEnglishBigram(enText)
+            let uaPlausible = ProtoLanguage.couldBeUkrainian(uaText)
+
+            if enImpossible && uaPlausible {
+                // Also verify the UA prefix exists in dictionary
+                if dict.isUkrainianPrefix(uaText) {
+                    print("[LayoutSwitcher] Early: '\(enText)' has impossible EN bigram, '\(uaText)' is valid UA prefix")
+                    return .ukrainian
                 }
             }
-            let bigramRatio = Double(bigramHits) / Double(chars.count - 1)
-            score += bigramRatio * 20
-        }
 
-        // Vowel/consonant ratio check — English words typically have vowels
-        let vowels: Set<Character> = ["a", "e", "i", "o", "u"]
-        let vowelCount = lower.filter { vowels.contains($0) }.count
-        let ratio = lower.isEmpty ? 0 : Double(vowelCount) / Double(lower.count)
-        if ratio > 0.15 && ratio < 0.7 {
-            score += 5
-        }
+            // Fallback: prefix-only check (no impossible bigram, but prefix doesn't exist)
+            if !dict.isEnglishPrefix(enText) && dict.isUkrainianPrefix(uaText) {
+                print("[LayoutSwitcher] Early: '\(enText)' not a valid EN prefix, '\(uaText)' is valid UA prefix")
+                return .ukrainian
+            }
 
-        return score
-    }
+        case .ukrainian:
+            // Currently Ukrainian layout → typed text is Cyrillic (uaText)
+            let uaImpossible = ProtoLanguage.hasImpossibleUkrainianBigram(uaText)
+            let enPlausible = ProtoLanguage.couldBeEnglish(enText)
 
-    /// Score a word for how likely it is Ukrainian (higher = more likely UA)
-    static func scoreUkrainian(_ word: String) -> Double {
-        let lower = word.lowercased()
-        var score: Double = 0
-
-        // All characters are Cyrillic (Ukrainian range)
-        let isCyrillic = lower.allSatisfy { char in
-            guard let scalar = char.unicodeScalars.first else { return false }
-            let v = scalar.value
-            // Basic Cyrillic: U+0400–U+04FF, covers Ukrainian specific chars
-            return (v >= 0x0400 && v <= 0x04FF)
-        }
-        if !isCyrillic { return -100 }
-
-        // Dictionary match
-        if ukrainianWords.contains(lower) {
-            score += 50
-        }
-
-        // Bigram analysis
-        if lower.count >= 2 {
-            let chars = Array(lower)
-            var bigramHits = 0
-            for i in 0..<(chars.count - 1) {
-                let bigram = String(chars[i...i+1])
-                if ukrainianBigrams.contains(bigram) {
-                    bigramHits += 1
+            if uaImpossible && enPlausible {
+                if dict.isEnglishPrefix(enText) {
+                    print("[LayoutSwitcher] Early: '\(uaText)' has impossible UA bigram, '\(enText)' is valid EN prefix")
+                    return .english
                 }
             }
-            let bigramRatio = Double(bigramHits) / Double(chars.count - 1)
-            score += bigramRatio * 20
-        }
 
-        // Ukrainian-specific characters boost
-        let uaSpecific: Set<Character> = ["і", "ї", "є", "ґ"]
-        if lower.contains(where: { uaSpecific.contains($0) }) {
-            score += 10
-        }
-
-        return score
-    }
-
-    /// Determine which language a word most likely belongs to.
-    /// Returns nil if unclear or both score low.
-    static func detectLanguage(of word: String) -> Language? {
-        let enScore = scoreEnglish(word)
-        let uaScore = scoreUkrainian(word)
-
-        // Need a meaningful difference to trigger switch
-        let threshold: Double = 5.0
-
-        if enScore > uaScore + threshold && enScore > 0 {
-            return .english
-        }
-        if uaScore > enScore + threshold && uaScore > 0 {
-            return .ukrainian
+            if !dict.isUkrainianPrefix(uaText) && dict.isEnglishPrefix(enText) {
+                print("[LayoutSwitcher] Early: '\(uaText)' not a valid UA prefix, '\(enText)' is valid EN prefix")
+                return .english
+            }
         }
 
         return nil
     }
 
-    /// Given buffered keycodes, reconstruct both EN and UA versions,
-    /// and determine the intended language.
-    static func detectIntended(keycodes: [(UInt16, Bool)], currentLayout: Language) -> Language? {
+    // MARK: - Full Word Detection (on word boundary)
+
+    /// Analyze complete word using all 3 stages.
+    static func detectIntended(
+        keycodes: [(UInt16, Bool)],
+        currentLayout: Language,
+        threshold: Double = 10.0,
+        settings: SettingsModel?
+    ) -> Language? {
         let enWord = KeyMapping.reconstruct(keycodes: keycodes, language: .english)
         let uaWord = KeyMapping.reconstruct(keycodes: keycodes, language: .ukrainian)
 
-        let enScore = scoreEnglish(enWord)
-        let uaScore = scoreUkrainian(uaWord)
+        // Stage 1: Exception list
+        if let settings = settings {
+            if settings.isException(enWord) || settings.isException(uaWord) {
+                print("[LayoutSwitcher] Word '\(enWord)'/'\(uaWord)' is in exception list, skipping")
+                return nil
+            }
+        }
 
-        // Only switch if the OTHER language scores significantly better
-        let threshold: Double = 10.0
+        // Stage 2: Dictionary lookup
+        let enIsWord = dict.isEnglishWord(enWord)
+        let uaIsWord = dict.isUkrainianWord(uaWord)
+
+        print("[LayoutSwitcher] Full word: EN '\(enWord)' dict=\(enIsWord), UA '\(uaWord)' dict=\(uaIsWord)")
 
         switch currentLayout {
         case .english:
-            // Currently typing in English. If Ukrainian version scores much better, switch
-            if uaScore > enScore + threshold && uaScore > 0 {
+            // Currently English. If UA reconstruction is a real word and EN is not → switch
+            if uaIsWord && !enIsWord {
                 return .ukrainian
             }
         case .ukrainian:
-            // Currently typing in Ukrainian. If English version scores much better, switch
-            if enScore > uaScore + threshold && enScore > 0 {
+            // Currently Ukrainian. If EN reconstruction is a real word and UA is not → switch
+            if enIsWord && !uaIsWord {
+                return .english
+            }
+        }
+
+        // Stage 3: Impossible bigram analysis (if dictionaries didn't help)
+        switch currentLayout {
+        case .english:
+            let enImpossible = ProtoLanguage.hasImpossibleEnglishBigram(enWord)
+            let uaPlausible = ProtoLanguage.couldBeUkrainian(uaWord)
+            if enImpossible && uaPlausible && !enIsWord {
+                print("[LayoutSwitcher] Stage 3: EN '\(enWord)' has impossible bigrams, UA '\(uaWord)' plausible")
+                return .ukrainian
+            }
+        case .ukrainian:
+            let uaImpossible = ProtoLanguage.hasImpossibleUkrainianBigram(uaWord)
+            let enPlausible = ProtoLanguage.couldBeEnglish(enWord)
+            if uaImpossible && enPlausible && !uaIsWord {
+                print("[LayoutSwitcher] Stage 3: UA '\(uaWord)' has impossible bigrams, EN '\(enWord)' plausible")
                 return .english
             }
         }
