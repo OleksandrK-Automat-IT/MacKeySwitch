@@ -86,13 +86,38 @@ final class DictionaryManager {
 
     // MARK: - Resource Loading
 
+    /// Safely get the SPM resource bundle without crashing
+    private static let safeResourceBundle: Bundle? = {
+        let bundleName = "LayoutSwitcher_LayoutSwitcher.bundle"
+
+        // 1. SPM default: next to the executable
+        let mainPath = Bundle.main.bundleURL.appendingPathComponent(bundleName).path
+        if let b = Bundle(path: mainPath) { return b }
+
+        // 2. Inside Contents/Resources/ (.app bundle layout)
+        let execURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
+        let appResourcesPath = execURL.deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Resources")
+            .appendingPathComponent(bundleName).path
+        if let b = Bundle(path: appResourcesPath) { return b }
+
+        // 3. Next to the executable directly
+        let siblingPath = execURL.deletingLastPathComponent()
+            .appendingPathComponent(bundleName).path
+        if let b = Bundle(path: siblingPath) { return b }
+
+        return nil
+    }()
+
     /// Find a resource file, checking multiple locations
     private func findResource(_ name: String, ext: String) -> URL? {
-        // 1. SPM Bundle.module (works when running from swift build)
-        if let url = Bundle.module.url(forResource: name, withExtension: ext) {
+        // 1. Safe resource bundle (SPM bundle, avoids fatalError)
+        if let bundle = DictionaryManager.safeResourceBundle,
+           let url = bundle.url(forResource: name, withExtension: ext) {
             return url
         }
-        // 2. Main app bundle Resources/ (works in .app bundle)
+        // 2. Main app bundle Resources/ (loose files)
         if let url = Bundle.main.url(forResource: name, withExtension: ext) {
             return url
         }
