@@ -1,6 +1,9 @@
 import Cocoa
 import Carbon
+import Combine
 import SwiftUI
+import UserNotifications
+import ObjCExceptionGuard
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -11,27 +14,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var layoutObserverTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Set runtime app icon (Dock/About/Alerts) to match the About-tab logo.
+        NSApp.applicationIconImage = AppIconRenderer.makeAppIcon(size: 512)
+
         setupStatusBar()
         monitor.settings = settings
         monitor.onUndoRequest = { [weak self] in self?.handleUndoHotkey() }
         setupGlobalUndoHotkey()
+        requestNotificationAuthorization()
         tryStartMonitor()
         startLayoutObserver()
+    }
+
+    /// Request notification permissions on launch. If the process's bundle is not registered
+    /// with the system (ad-hoc signed), UNUserNotificationCenter APIs throw
+    /// `NSInternalInconsistencyException`. We catch that via an ObjC try, and disable
+    /// notifications at runtime so the app never crashes on a later correction.
+    private func requestNotificationAuthorization() {
+        // Guard the entire UN interaction behind ObjC exception handling — on ad-hoc-signed
+        // bundles these APIs can throw `NSInternalInconsistencyException` (not a Swift error),
+        // which would otherwise terminate the process.
+        let ok = ObjCExceptionGuard.tryBlock {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+                if let error = error {
+                    print("[MacKeySwitch] Notification auth error: \(error.localizedDescription)")
+                    KeyboardMonitor.notificationsAvailable = false
+                    return
+                }
+                KeyboardMonitor.notificationsAvailable = granted
+                print("[MacKeySwitch] Notifications authorized: \(granted)")
+            }
+        }
+        if !ok {
+            print("[MacKeySwitch] UNUserNotificationCenter unavailable in this bundle — disabling notifications.")
+            KeyboardMonitor.notificationsAvailable = false
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         accessibilityTimer?.invalidate()
         layoutObserverTimer?.invalidate()
+        undoHotkey.unregister()
         monitor.stop()
     }
 
-    // MARK: - Global Undo Hotkey (Ctrl+Z by default, configurable)
+    /// Critical for menu-bar apps: don't quit when the Settings window closes.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
 
-    private var undoHotkeyTap: CFMachPort?
+    // MARK: - Global Undo Hotkey (Carbon-based)
 
+    private let undoHotkey = CarbonHotkey()
+    private var hotkeyCancellables = Set<AnyCancellable>()
+
+    /// Register the system-wide undo hotkey via Carbon. Re-registers automatically
+    /// when the user changes keyCode/modifiers in Settings.
     private func setupGlobalUndoHotkey() {
-        // Ctrl+Shift+Space to undo last switch
-        // Registered separately so it works even when monitor is busy
+        undoHotkey.onFire = { [weak self] in self?.handleUndoHotkey() }
+        refreshUndoHotkey()
+
+        // Re-register on change. CombineLatest fires once on subscribe, which is fine
+        // (idempotent — register() unregisters prior ref first).
+        Publishers.CombineLatest(settings.$undoHotkeyKeyCode, settings.$undoHotkeyModifiers)
+            .dropFirst() // skip initial sink on subscribe — we already called refresh above
+            .sink { [weak self] _, _ in self?.refreshUndoHotkey() }
+            .store(in: &hotkeyCancellables)
+    }
+
+    private func refreshUndoHotkey() {
+        guard settings.undoHotkeyIsEnabled else {
+            undoHotkey.unregister()
+            print("[LayoutSwitcher] Undo hotkey disabled.")
+            return
+        }
+        let flags = NSEvent.ModifierFlags(rawValue: settings.undoHotkeyModifiers)
+        let carbonMods = CarbonHotkey.carbonModifiers(from: flags)
+        _ = undoHotkey.register(
+            keyCode: UInt32(settings.undoHotkeyKeyCode),
+            carbonModifiers: carbonMods
+        )
     }
 
     private func handleUndoHotkey() {
@@ -221,25 +283,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Accessibility
 
     private func tryStartMonitor() {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
-
-        if trusted {
+        // First check without prompting — if already trusted, start immediately.
+        if AXIsProcessTrusted() {
             monitor.start()
-        } else {
-            print("[MacKeySwitch] Waiting for Accessibility permission...")
-            if let button = statusItem.button {
-                button.image = nil
-                button.title = "?? \u{26A0}"
-            }
-            accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
-                if AXIsProcessTrusted() {
-                    timer.invalidate()
-                    self?.accessibilityTimer = nil
-                    print("[MacKeySwitch] Accessibility permission granted!")
-                    self?.monitor.start()
-                    self?.updateLayoutIcon()
-                }
+            return
+        }
+
+        // Not trusted — prompt ONCE (not on every poll; repeated prompts can trigger
+        // macOS to re-evaluate the process and kill it after the user grants permission).
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(options)
+
+        print("[MacKeySwitch] Waiting for Accessibility permission...")
+        if let button = statusItem.button {
+            button.image = nil
+            button.title = "?? \u{26A0}"
+        }
+
+        // Poll (without re-prompting) until permission is granted.
+        accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            if AXIsProcessTrusted() {
+                timer.invalidate()
+                self?.accessibilityTimer = nil
+                print("[MacKeySwitch] Accessibility permission granted!")
+                self?.monitor.start()
+                self?.updateLayoutIcon()
             }
         }
     }

@@ -59,6 +59,15 @@ struct GeneralTab: View {
             }
 
             Section {
+                HotkeyRecorderRow(settings: settings)
+                Text("Press a key combination with at least one modifier (\u{2303} \u{2325} \u{21E7} \u{2318}).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } header: {
+                Text("Undo Hotkey")
+            }
+
+            Section {
                 HStack {
                     Text("Current layout:")
                     Spacer()
@@ -77,6 +86,92 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+// MARK: - Hotkey Recorder
+
+/// Row that shows the current undo hotkey and lets the user re-record it.
+/// While "Record" is active, an NSEvent local monitor captures the next keyDown
+/// and stores its keyCode + modifier flags. Esc cancels, Delete disables.
+struct HotkeyRecorderRow: View {
+    @ObservedObject var settings: SettingsModel
+    @State private var isRecording = false
+    @State private var monitor: Any?
+
+    var body: some View {
+        HStack {
+            Text("Undo last correction:")
+            Spacer()
+
+            Button(action: toggleRecording) {
+                Text(isRecording ? "Press keys\u{2026} (Esc to cancel, \u{232B} to disable)"
+                                 : settings.undoHotkeyDescription)
+                    .monospacedDigit()
+                    .frame(minWidth: 140)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(isRecording ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1))
+                    )
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                settings.undoHotkeyKeyCode = 0
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Disable hotkey")
+            .disabled(!settings.undoHotkeyIsEnabled)
+        }
+        .onDisappear { stopRecording() }
+    }
+
+    private func toggleRecording() {
+        if isRecording { stopRecording() } else { startRecording() }
+    }
+
+    private func startRecording() {
+        isRecording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            handle(event: event)
+            return nil // swallow the key so it doesn't leak into fields
+        }
+    }
+
+    private func stopRecording() {
+        isRecording = false
+        if let m = monitor {
+            NSEvent.removeMonitor(m)
+            monitor = nil
+        }
+    }
+
+    private func handle(event: NSEvent) {
+        let kc = event.keyCode
+        // Esc cancels
+        if kc == 0x35 {
+            stopRecording()
+            return
+        }
+        // Delete/Backspace disables
+        if kc == 0x33 {
+            settings.undoHotkeyKeyCode = 0
+            stopRecording()
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let meaningful = flags.intersection([.control, .option, .shift, .command])
+        // Require at least one non-shift modifier — bare 'Z' or '⇧Z' would eat typing.
+        let nonShift: NSEvent.ModifierFlags = [.control, .option, .command]
+        guard !meaningful.isDisjoint(with: nonShift) else { return }
+        settings.undoHotkeyKeyCode = Int(kc)
+        settings.undoHotkeyModifiers = meaningful.rawValue
+        stopRecording()
     }
 }
 
@@ -434,57 +529,169 @@ struct StatisticsTab: View {
     @ObservedObject var settings: SettingsModel
 
     var body: some View {
-        Form {
-            Section {
-                HStack {
-                    Text("Total corrections (all time):")
-                    Spacer()
-                    Text("\(settings.totalCorrections)")
-                        .monospacedDigit()
-                        .foregroundColor(.secondary)
-                }
+        VStack(alignment: .leading, spacing: 16) {
+            // Correction Statistics — in its own Form so it stays grouped.
+            Form {
+                Section {
+                    HStack {
+                        Text("Total corrections (all time):")
+                        Spacer()
+                        Text("\(settings.totalCorrections)")
+                            .monospacedDigit()
+                            .foregroundColor(.secondary)
+                    }
 
-                HStack {
-                    Text("Corrections this session:")
-                    Spacer()
-                    Text("\(settings.sessionCorrections)")
-                        .monospacedDigit()
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Text("Corrections this session:")
+                        Spacer()
+                        Text("\(settings.sessionCorrections)")
+                            .monospacedDigit()
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button("Reset Statistics") {
+                        settings.resetStatistics()
+                    }
+                    .foregroundColor(.red)
+                } header: {
+                    Text("Correction Statistics")
                 }
-            } header: {
-                Text("Correction Statistics")
             }
+            .formStyle(.grouped)
+            .frame(maxHeight: 180)
 
-            Section {
-                if settings.exceptionWords.isEmpty {
-                    Text("No learned exceptions yet. Backspace after a wrong correction to teach the app.")
-                        .foregroundColor(.secondary)
-                        .font(.caption)
-                } else {
-                    ForEach(settings.exceptionWords, id: \.self) { word in
-                        Text(word)
-                    }
-                    .onDelete { indexSet in
-                        settings.exceptionWords.remove(atOffsets: indexSet)
-                    }
-                }
-            } header: {
+            // Exceptions Editor — lives outside the Form so List(selection:) renders
+            // as a proper interactive table with per-row controls.
+            VStack(alignment: .leading, spacing: 6) {
                 Text("Self-Learned Exceptions (\(settings.exceptionWords.count))")
+                    .font(.headline)
+                ExceptionsEditor(settings: settings)
+            }
+            .padding(.horizontal)
+        }
+        .padding(.vertical)
+    }
+}
+
+// MARK: - Exceptions Editor
+
+/// List of self-learned exception words with per-row editing, per-row delete,
+/// multi-select + bulk delete, and a "Clear All" action.
+struct ExceptionsEditor: View {
+    @ObservedObject var settings: SettingsModel
+    @State private var selection = Set<String>()
+    @State private var newWord: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if settings.exceptionWords.isEmpty {
+                Text("No learned exceptions yet. Backspace after a wrong correction to teach the app, or add one below.")
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+            } else {
+                // Multi-select List. Each row has an inline TextField + delete button.
+                List(selection: $selection) {
+                    ForEach(Array(settings.exceptionWords.enumerated()), id: \.element) { index, word in
+                        HStack {
+                            TextField(
+                                "",
+                                text: Binding(
+                                    get: { settings.exceptionWords[safe: index] ?? word },
+                                    set: { newValue in updateWord(at: index, to: newValue) }
+                                )
+                            )
+                            .textFieldStyle(.roundedBorder)
+
+                            Button {
+                                deleteWord(word)
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Delete this word")
+                        }
+                        .tag(word)
+                    }
+                }
+                .frame(minHeight: 140, maxHeight: 200)
+
+                HStack {
+                    Button("Delete Selected") { deleteSelected() }
+                        .disabled(selection.isEmpty)
+
+                    Text("\(selection.count) selected")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    Button("Clear All") {
+                        settings.exceptionWords.removeAll()
+                        selection.removeAll()
+                    }
+                    .foregroundColor(.red)
+                }
             }
 
-            Section {
-                Button("Clear Exception Words") {
-                    settings.exceptionWords.removeAll()
-                }
-                .disabled(settings.exceptionWords.isEmpty)
+            Divider()
 
-                Button("Reset Statistics") {
-                    settings.resetStatistics()
-                }
-                .foregroundColor(.red)
+            HStack {
+                TextField("Add exception word\u{2026}", text: $newWord)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addWord() }
+                Button("Add") { addWord() }
+                    .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .formStyle(.grouped)
+    }
+
+    private func updateWord(at index: Int, to newValue: String) {
+        let normalized = newValue.trimmingCharacters(in: .whitespaces).lowercased()
+        guard index < settings.exceptionWords.count else { return }
+        let old = settings.exceptionWords[index]
+        if normalized.isEmpty {
+            // Empty text removes the word
+            settings.exceptionWords.remove(at: index)
+            selection.remove(old)
+            return
+        }
+        // Deduplicate: if editing to a value already present elsewhere, drop this row.
+        if let existingIdx = settings.exceptionWords.firstIndex(of: normalized), existingIdx != index {
+            settings.exceptionWords.remove(at: index)
+            selection.remove(old)
+            return
+        }
+        settings.exceptionWords[index] = normalized
+        if selection.remove(old) != nil {
+            selection.insert(normalized)
+        }
+    }
+
+    private func deleteWord(_ word: String) {
+        settings.exceptionWords.removeAll { $0 == word }
+        selection.remove(word)
+    }
+
+    private func deleteSelected() {
+        settings.exceptionWords.removeAll { selection.contains($0) }
+        selection.removeAll()
+    }
+
+    private func addWord() {
+        let w = newWord.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !w.isEmpty, !settings.exceptionWords.contains(w) else {
+            newWord = ""
+            return
+        }
+        settings.exceptionWords.append(w)
+        newWord = ""
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
     }
 }
 

@@ -1,6 +1,7 @@
 import Cocoa
 import Foundation
 import UserNotifications
+import ObjCExceptionGuard
 
 // Global C callback
 private func eventTapCallback(
@@ -18,6 +19,10 @@ private func eventTapCallback(
 }
 
 final class KeyboardMonitor {
+    /// Global flag set by AppDelegate after auth request resolves.
+    /// Defaults to false until explicitly set true — prevents any UN call on first run.
+    static var notificationsAvailable: Bool = false
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
@@ -49,6 +54,14 @@ final class KeyboardMonitor {
 
     // Manual layout switch detection: suppress auto-switch for first word after manual switch
     private var lastManualSwitchTime: Date?
+    /// Set at word-start when manual switch was recent; forces the current word to skip correction.
+    private var skipCurrentWordCorrection: Bool = false
+
+    // Max buffer length — prevents unbounded growth in long URL/password fields
+    private let maxBufferLength = 64
+
+    // Lock for fields shared between main (handleEvent) and correctionQueue (performCorrection)
+    private let stateLock = NSLock()
 
     // Callback for undo hotkey
     var onUndoRequest: (() -> Void)?
@@ -151,13 +164,11 @@ final class KeyboardMonitor {
         }
 
         // Suppress auto-switching if user manually switched layout recently (within 2s)
-        if let manualTime = lastManualSwitchTime,
-           Date().timeIntervalSince(manualTime) < 2.0,
-           keyBuffer.isEmpty {
-            // First character after manual switch — don't auto-correct this word
-            lastManualSwitchTime = nil  // consume the flag
-            // We still buffer but skip correction by resetting wordStartLayout to match current
-            // This way the word won't trigger a switch since current == wordStart
+        // Take the flag into skipCurrentWordCorrection — it will be cleared at word boundary.
+        if keyBuffer.isEmpty, let manualTime = lastManualSwitchTime,
+           Date().timeIntervalSince(manualTime) < 2.0 {
+            skipCurrentWordCorrection = true
+            lastManualSwitchTime = nil
         }
 
         let keycode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
@@ -170,12 +181,19 @@ final class KeyboardMonitor {
                let lastTime = lastCorrectionTime,
                Date().timeIntervalSince(lastTime) < 5.0 {
                 backspaceCountAfterCorrection += 1
-                // If they backspaced enough to erase the corrected word, add to exceptions
+                // If they backspaced enough to erase the corrected word, add ONLY
+                // the corrected form to exceptions (per user preference — keep the
+                // exception list clean, without gibberish wrong-layout twins).
                 if backspaceCountAfterCorrection >= lastWord.count {
                     settings?.addException(lastWord)
+                    stateLock.lock()
                     lastCorrectedWord = nil
                     lastCorrectionTime = nil
                     backspaceCountAfterCorrection = 0
+                    lastOriginalText = nil
+                    lastOriginalLayout = nil
+                    lastCorrectedText = nil
+                    stateLock.unlock()
                 }
             }
             // Shrink buffer
@@ -190,17 +208,25 @@ final class KeyboardMonitor {
             return
         }
 
-        // Any non-backspace key clears the undo tracking
-        if lastCorrectedWord != nil {
+        // Any non-backspace key clears the undo tracking AND the undo-target snapshot.
+        // Otherwise Ctrl+Shift+Z 2 words later would Option+Shift+Left-select the wrong word
+        // and replace it with the previous correction's original text.
+        if lastCorrectedWord != nil || lastOriginalText != nil {
+            stateLock.lock()
             lastCorrectedWord = nil
             lastCorrectionTime = nil
             backspaceCountAfterCorrection = 0
+            lastOriginalText = nil
+            lastOriginalLayout = nil
+            lastCorrectedText = nil
+            stateLock.unlock()
         }
 
         // Word boundary — perform correction here (never mid-word)
         if KeyMapping.wordBoundaryKeycodes.contains(keycode) {
             let minLen = settings?.minWordLength ?? 2
-            if keyBuffer.count >= minLen && !isCorrecting && !looksLikePassword() {
+            let shouldSkip = skipCurrentWordCorrection
+            if !shouldSkip && keyBuffer.count >= minLen && !isCorrecting && !looksLikePassword() {
                 let layout = wordStartLayout ?? currentLang
                 if let pending = pendingSwitch {
                     // Early detection already decided — use it directly
@@ -209,9 +235,10 @@ final class KeyboardMonitor {
                     // No early detection — do full word analysis
                     triggerFullWordCorrection(layout: layout)
                 }
+            } else if shouldSkip {
+                print("[LayoutSwitcher] Skipped correction for this word (manual layout switch detected)")
             }
             resetBuffer()
-            pendingSwitch = nil
             return
         }
 
@@ -229,6 +256,13 @@ final class KeyboardMonitor {
 
         keyBuffer.append((keycode, isShifted))
         charCount += 1
+
+        // Cap buffer length — avoids unbounded growth in fields without spaces (URLs, passwords)
+        if keyBuffer.count > maxBufferLength {
+            // Treat as non-word — reset quietly, user is probably typing something structural.
+            resetBuffer()
+            return
+        }
 
         // REAL-TIME: check after 3rd character using impossible bigrams
         if charCount >= 3 && !isCorrecting && !looksLikePassword() {
@@ -386,8 +420,10 @@ final class KeyboardMonitor {
 
         usleep(delayUs)
 
-        // Switch input source
-        InputSourceManager.switchTo(to)
+        // Switch input source (TIS APIs must run on the main thread)
+        DispatchQueue.main.sync {
+            InputSourceManager.switchTo(to)
+        }
 
         usleep(delayUs)
 
@@ -397,20 +433,22 @@ final class KeyboardMonitor {
             simulateKey(keycode: 0x31, flags: []) // space
         }
 
-        isCorrecting = false
-
-        // Track for self-learning (undo detection)
-        lastCorrectedWord = correctText
-        lastCorrectedText = correctText
-        lastCorrectionTime = Date()
-        backspaceCountAfterCorrection = 0
-
-        // Store original text for undo
-        lastOriginalText = originalText
-        lastOriginalLayout = from
-
+        // Publish post-correction state on main, under the lock, so handleEvent
+        // never observes a torn view of these fields.
+        let now = Date()
         DispatchQueue.main.async { [weak self] in
-            self?.settings?.recordCorrection()
+            guard let self = self else { return }
+            self.stateLock.lock()
+            self.isCorrecting = false
+            self.lastCorrectedWord = correctText
+            self.lastCorrectedText = correctText
+            self.lastCorrectionTime = now
+            self.backspaceCountAfterCorrection = 0
+            self.lastOriginalText = originalText
+            self.lastOriginalLayout = from
+            self.stateLock.unlock()
+
+            self.settings?.recordCorrection()
         }
 
         if notify {
@@ -432,10 +470,15 @@ final class KeyboardMonitor {
 
     /// Undo the last auto-correction: delete the corrected word, switch back, retype original.
     func undoLastCorrection() {
-        guard let originalText = lastOriginalText,
-              let originalLayout = lastOriginalLayout,
-              let _ = lastCorrectedText,
-              let correctionTime = lastCorrectionTime,
+        stateLock.lock()
+        let originalTextOpt = lastOriginalText
+        let originalLayoutOpt = lastOriginalLayout
+        let correctionTimeOpt = lastCorrectionTime
+        stateLock.unlock()
+
+        guard let originalText = originalTextOpt,
+              let originalLayout = originalLayoutOpt,
+              let correctionTime = correctionTimeOpt,
               Date().timeIntervalSince(correctionTime) < 10.0 else {
             print("[LayoutSwitcher] Nothing to undo")
             return
@@ -456,8 +499,10 @@ final class KeyboardMonitor {
             self.simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
             usleep(delayUs)
 
-            // Switch back to original layout
-            InputSourceManager.switchTo(originalLayout)
+            // Switch back to original layout (TIS APIs must run on main thread)
+            DispatchQueue.main.sync {
+                InputSourceManager.switchTo(originalLayout)
+            }
             usleep(delayUs)
 
             // Retype original text + space
@@ -465,21 +510,25 @@ final class KeyboardMonitor {
             self.simulateKey(keycode: 0x31, flags: []) // space
             usleep(5_000)
 
-            self.isCorrecting = false
-
-            // Clear undo state
-            self.lastOriginalText = nil
-            self.lastOriginalLayout = nil
-            self.lastCorrectedText = nil
-            self.lastCorrectedWord = nil
-            self.lastCorrectionTime = nil
-
-            // Add to exceptions so it won't be corrected again
+            // Snapshot corrected form then clear all undo state atomically on main thread
             DispatchQueue.main.async {
-                self.settings?.addException(originalText)
+                self.stateLock.lock()
+                let correctedForm = self.lastCorrectedWord ?? ""
+                self.isCorrecting = false
+                self.lastOriginalText = nil
+                self.lastOriginalLayout = nil
+                self.lastCorrectedText = nil
+                self.lastCorrectedWord = nil
+                self.lastCorrectionTime = nil
+                self.stateLock.unlock()
+
+                // Add ONLY the corrected form to exceptions (per user preference).
+                if !correctedForm.isEmpty {
+                    self.settings?.addException(correctedForm)
+                }
             }
 
-            print("[LayoutSwitcher] Undo: restored '\(originalText)' (\(originalLayout.rawValue))")
+            print("[LayoutSwitcher] Undo: restored '\(originalText)' (\(originalLayout.rawValue)), added to exceptions")
         }
     }
 
@@ -490,6 +539,7 @@ final class KeyboardMonitor {
         charCount = 0
         wordStartLayout = nil
         pendingSwitch = nil
+        skipCurrentWordCorrection = false
         resetPasswordFlags()
     }
 
@@ -524,14 +574,28 @@ final class KeyboardMonitor {
     }
 
     private func showNotification(from: Language, to: Language, word: String) {
-        let content = UNMutableNotificationContent()
-        content.title = "MacKeySwitch"
-        content.body = "\(from.rawValue.capitalized) \u{2192} \(to.rawValue.capitalized): \(word)"
-        let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+        // Only attempt if authorization resolved successfully at launch.
+        guard KeyboardMonitor.notificationsAvailable else { return }
+
+        let fromLabel = from.rawValue.capitalized
+        let toLabel = to.rawValue.capitalized
+        DispatchQueue.main.async {
+            // Guard against NSInternalInconsistencyException on ad-hoc / unsigned bundles.
+            _ = ObjCExceptionGuard.tryBlock {
+                let content = UNMutableNotificationContent()
+                content.title = "MacKeySwitch"
+                content.body = "\(fromLabel) \u{2192} \(toLabel): \(word)"
+                let request = UNNotificationRequest(
+                    identifier: UUID().uuidString,
+                    content: content,
+                    trigger: nil
+                )
+                UNUserNotificationCenter.current().add(request) { error in
+                    if let error = error {
+                        print("[MacKeySwitch] Notification post error: \(error.localizedDescription)")
+                    }
+                }
+            }
+        }
     }
 }

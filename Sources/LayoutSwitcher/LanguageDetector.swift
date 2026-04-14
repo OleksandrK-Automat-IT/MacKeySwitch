@@ -19,9 +19,13 @@ struct LanguageDetector {
         let enText = KeyMapping.reconstruct(keycodes: keycodes, language: .english)
         let uaText = KeyMapping.reconstruct(keycodes: keycodes, language: .ukrainian)
 
-        // Stage 1: Exception list — never correct these
+        // Stage 1: Exception list — never correct if the word user is ACTUALLY typing
+        // (in the current layout) is an exception. Checking the OTHER reconstruction
+        // would wrongly block a wrong-layout word whose correct-layout twin happens
+        // to be in exceptions (e.g. typing "gthtdshrf" in EN while "перевірка" is excepted).
         if let settings = settings {
-            if settings.isException(enText) || settings.isException(uaText) {
+            let currentText = currentLayout == .english ? enText : uaText
+            if settings.isException(currentText) {
                 return nil
             }
         }
@@ -81,10 +85,11 @@ struct LanguageDetector {
         let enWord = KeyMapping.reconstruct(keycodes: keycodes, language: .english)
         let uaWord = KeyMapping.reconstruct(keycodes: keycodes, language: .ukrainian)
 
-        // Stage 1: Exception list
+        // Stage 1: Exception list — see detectEarly for rationale (check only current layout).
         if let settings = settings {
-            if settings.isException(enWord) || settings.isException(uaWord) {
-                print("[LayoutSwitcher] Word '\(enWord)'/'\(uaWord)' is in exception list, skipping")
+            let currentWord = currentLayout == .english ? enWord : uaWord
+            if settings.isException(currentWord) {
+                print("[LayoutSwitcher] Word '\(currentWord)' is in exception list, skipping")
                 return nil
             }
         }

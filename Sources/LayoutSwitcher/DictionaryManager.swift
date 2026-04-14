@@ -11,7 +11,10 @@ final class DictionaryManager {
     private var englishPrefixes: Set<String> = []
     private var ukrainianPrefixes: Set<String> = []
 
-    private let spellChecker = NSSpellChecker.shared
+    // Guards all four sets. Reads happen on the correction queue (bg thread);
+    // writes happen on the main thread (SettingsView import, launch init).
+    // Without the lock, Set mutation racing with membership check crashes.
+    private let lock = NSLock()
 
     private init() {
         loadBundledDictionaries()
@@ -20,13 +23,18 @@ final class DictionaryManager {
     private func loadBundledDictionaries() {
         let start = CFAbsoluteTimeGetCurrent()
 
+        var enSet: Set<String> = []
+        var enPrefix: Set<String> = []
+        var uaSet: Set<String> = []
+        var uaPrefix: Set<String> = []
+
         if let enURL = findResource("en_words", ext: "txt"),
            let enContent = try? String(contentsOf: enURL, encoding: .utf8) {
             let words = enContent.components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                 .filter { !$0.isEmpty }
-            englishWords = Set(words)
-            englishPrefixes = Set(words.compactMap { word in
+            enSet = Set(words)
+            enPrefix = Set(words.compactMap { word in
                 word.count >= 3 ? String(word.prefix(3)) : nil
             })
         }
@@ -36,52 +44,59 @@ final class DictionaryManager {
             let words = uaContent.components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                 .filter { !$0.isEmpty }
-            ukrainianWords = Set(words)
-            ukrainianPrefixes = Set(words.compactMap { word in
+            uaSet = Set(words)
+            uaPrefix = Set(words.compactMap { word in
                 word.count >= 3 ? String(word.prefix(3)) : nil
             })
         }
 
+        lock.lock()
+        englishWords = enSet
+        englishPrefixes = enPrefix
+        ukrainianWords = uaSet
+        ukrainianPrefixes = uaPrefix
+        let enCount = englishWords.count
+        let uaCount = ukrainianWords.count
+        lock.unlock()
+
         let elapsed = CFAbsoluteTimeGetCurrent() - start
-        print("[LayoutSwitcher] Dictionaries loaded: EN=\(englishWords.count) words, UA=\(ukrainianWords.count) words (\(String(format: "%.1f", elapsed * 1000))ms)")
+        print("[LayoutSwitcher] Dictionaries loaded: EN=\(enCount) words, UA=\(uaCount) words (\(String(format: "%.1f", elapsed * 1000))ms)")
     }
 
     // MARK: - Public API
 
-    /// Check if a word exists in the English dictionary
+    /// Check if a word exists in the English dictionary.
+    /// NOTE: NSSpellChecker is not thread-safe and was removed as a fallback;
+    /// bundled dictionaries + impossible-bigram + prefix checks are sufficient.
     func isEnglishWord(_ word: String) -> Bool {
         let lower = word.lowercased()
-        if englishWords.contains(lower) { return true }
-        // Fallback: macOS spell checker
-        let range = spellChecker.checkSpelling(of: lower, startingAt: 0, language: "en", wrap: false, inSpellDocumentWithTag: 0, wordCount: nil)
-        return range.location == NSNotFound
+        lock.lock(); defer { lock.unlock() }
+        return englishWords.contains(lower)
     }
 
     /// Check if a word exists in the Ukrainian dictionary
     func isUkrainianWord(_ word: String) -> Bool {
         let lower = word.lowercased()
-        if ukrainianWords.contains(lower) { return true }
-        // Fallback: macOS spell checker
-        let range = spellChecker.checkSpelling(of: lower, startingAt: 0, language: "uk", wrap: false, inSpellDocumentWithTag: 0, wordCount: nil)
-        return range.location == NSNotFound
+        lock.lock(); defer { lock.unlock() }
+        return ukrainianWords.contains(lower)
     }
 
     /// Check if a 3+ char prefix could start an English word
     func isEnglishPrefix(_ prefix: String) -> Bool {
         let lower = prefix.lowercased()
-        if lower.count >= 3 {
-            return englishPrefixes.contains(String(lower.prefix(3)))
-        }
-        return true // too short to tell
+        guard lower.count >= 3 else { return true } // too short to tell
+        let p = String(lower.prefix(3))
+        lock.lock(); defer { lock.unlock() }
+        return englishPrefixes.contains(p)
     }
 
     /// Check if a 3+ char prefix could start a Ukrainian word
     func isUkrainianPrefix(_ prefix: String) -> Bool {
         let lower = prefix.lowercased()
-        if lower.count >= 3 {
-            return ukrainianPrefixes.contains(String(lower.prefix(3)))
-        }
-        return true
+        guard lower.count >= 3 else { return true }
+        let p = String(lower.prefix(3))
+        lock.lock(); defer { lock.unlock() }
+        return ukrainianPrefixes.contains(p)
     }
 
     // MARK: - Resource Loading
@@ -154,6 +169,7 @@ final class DictionaryManager {
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             .filter { !$0.isEmpty }
 
+        lock.lock()
         switch language {
         case .english:
             for word in words {
@@ -170,8 +186,11 @@ final class DictionaryManager {
                 }
             }
         }
+        let enCount = englishWords.count
+        let uaCount = ukrainianWords.count
+        lock.unlock()
 
-        print("[LayoutSwitcher] Loaded \(words.count) words from \(url.lastPathComponent) for \(language.rawValue). Total EN=\(englishWords.count), UA=\(ukrainianWords.count)")
+        print("[LayoutSwitcher] Loaded \(words.count) words from \(url.lastPathComponent) for \(language.rawValue). Total EN=\(enCount), UA=\(uaCount)")
         return words.count
     }
 
@@ -189,6 +208,7 @@ final class DictionaryManager {
 
     /// Add custom words
     func addCustomEnglishWords(_ words: [String]) {
+        lock.lock(); defer { lock.unlock() }
         for word in words {
             let lower = word.lowercased()
             englishWords.insert(lower)
@@ -199,6 +219,7 @@ final class DictionaryManager {
     }
 
     func addCustomUkrainianWords(_ words: [String]) {
+        lock.lock(); defer { lock.unlock() }
         for word in words {
             let lower = word.lowercased()
             ukrainianWords.insert(lower)
