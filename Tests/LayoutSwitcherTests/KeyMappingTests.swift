@@ -64,6 +64,43 @@ import Testing
         }
     }
 
+    @Test(arguments: ["pfd;lb", "ghbdsn", "hello", "j,'.", "gjckfyysq"])
+    func everyBufferedKeystrokeIsExactlyOneCharacterInBothLayouts(typed: String) {
+        // The correction erases the old word with a fixed number of backspaces, and that
+        // count comes from the reconstructed text. It is only correct if one keystroke
+        // never yields two characters, or none, in either layout.
+        let keys = keycodes(forTyping: typed)
+        #expect(keys.count == typed.count, "helper dropped a key from '\(typed)'")
+        #expect(KeyMapping.reconstruct(keycodes: keys, language: .english).count == keys.count)
+        #expect(KeyMapping.reconstruct(keycodes: keys, language: .ukrainian).count == keys.count)
+    }
+
+    @Test func keysThatTypePunctuationInEnglishAreUkrainianLetters() {
+        // Why the correction cannot delete by "select word backward": these keys are part
+        // of a Ukrainian word but read as punctuation, and a text engine treats punctuation
+        // as a word break. "pfd;lb" is "завжди"; selecting backward stops at the ';'.
+        let punctuationKeys: [(UInt16, Character, Character)] = [
+            (0x29, ";", "ж"),
+            (0x2B, ",", "б"),
+            (0x2F, ".", "ю"),
+            (0x27, "'", "є"),
+            (0x21, "[", "х"),
+            (0x1E, "]", "ї"),
+        ]
+        for (keycode, english, ukrainian) in punctuationKeys {
+            #expect(KeyMapping.isLetterKey(keycode), "keycode \(keycode) must be buffered")
+            #expect(KeyMapping.unshifted[keycode]?.en == english)
+            #expect(KeyMapping.unshifted[keycode]?.ua == ukrainian)
+        }
+    }
+
+    @Test func theReportedMiscorrectionReconstructsCorrectly() {
+        // Regression for "pfd;lb" being corrected to "pfd;завжди" instead of "завжди".
+        let keys = keycodes(forTyping: "pfd;lb")
+        #expect(KeyMapping.reconstruct(keycodes: keys, language: .ukrainian) == "завжди")
+        #expect(KeyMapping.reconstruct(keycodes: keys, language: .english) == "pfd;lb")
+    }
+
     @Test func languageOppositeRoundTrips() {
         #expect(Language.english.opposite == .ukrainian)
         #expect(Language.ukrainian.opposite == .english)

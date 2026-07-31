@@ -342,21 +342,19 @@ final class KeyboardMonitor {
         // Wait for the triggering space to fully process
         usleep(50_000)
 
-        // Delete the trailing space
-        simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
-        usleep(10_000)
-
-        // Select the whole word backward with Option+Shift+Left (selects by word).
-        // More reliable than counting characters.
-        simulateKey(
-            keycode: 0x7B,
-            flags: CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue
-                                | CGEventFlags.maskAlternate.rawValue)
-        )
-        usleep(10_000)
-
-        // Delete the selection
-        simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
+        // Erase the word and its trailing space with an exact number of backspaces.
+        //
+        // This used to select the word with Option+Shift+Left, on the theory that letting
+        // the text engine find the word start beats counting characters. It does not: the
+        // buffer's idea of a word is "letter keys since the last space", and on a US
+        // layout several of those keys type punctuation — ';' is Ukrainian 'ж', ',' is 'б',
+        // '.' is 'ю'. The text engine breaks a word on that punctuation, so the selection
+        // covered only the tail. Typing "pfd;lb" for "завжди" deleted just "lb" and left
+        // "pfd;завжди" behind.
+        //
+        // The count is exact: every buffered keystroke produces exactly one character in
+        // either layout (asserted in KeyMappingTests), plus one for the trailing space.
+        deleteBackward(characters: originalText.count + 1)
 
         usleep(delayUs)
 
@@ -411,12 +409,15 @@ final class KeyboardMonitor {
         let originalTextOpt = lastOriginalText
         let originalLayoutOpt = lastOriginalLayout
         let correctionTimeOpt = lastCorrectionTime
-        let correctedForm = lastCorrectedWord ?? ""
+        let correctedFormOpt = lastCorrectedWord
         stateLock.unlock()
 
+        // The corrected form is required, not optional: its length is how much text has to
+        // be erased before the original can be retyped.
         guard let originalText = originalTextOpt,
               let originalLayout = originalLayoutOpt,
               let correctionTime = correctionTimeOpt,
+              let correctedForm = correctedFormOpt, !correctedForm.isEmpty,
               Date().timeIntervalSince(correctionTime) < 10.0 else {
             print("[LayoutSwitcher] Nothing to undo")
             return
@@ -429,16 +430,9 @@ final class KeyboardMonitor {
             self.isCorrecting = true
             let delayUs = UInt32(max(delayMs, 50) * 1000)
 
-            // Select the corrected word + trailing space backward
-            self.simulateKey(
-                keycode: 0x7B,
-                flags: CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue
-                                    | CGEventFlags.maskAlternate.rawValue)
-            )
-            usleep(10_000)
-
-            // Delete the selection
-            self.simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
+            // Erase the corrected word and its trailing space. Counted, not selected —
+            // see performCorrection for why word selection cannot be trusted here.
+            self.deleteBackward(characters: correctedForm.count + 1)
             usleep(delayUs)
 
             // Switch back to original layout (TIS APIs must run on main thread)
@@ -486,6 +480,14 @@ final class KeyboardMonitor {
     private func post(_ event: CGEvent) {
         event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
         event.post(tap: .cgAnnotatedSessionEventTap)
+    }
+
+    /// Press backspace exactly `characters` times.
+    private func deleteBackward(characters: Int) {
+        guard characters > 0 else { return }
+        for _ in 0..<characters {
+            simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
+        }
     }
 
     private func simulateKey(keycode: UInt16, flags: CGEventFlags) {
