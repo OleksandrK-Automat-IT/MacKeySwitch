@@ -1,7 +1,7 @@
 import Cocoa
 import Foundation
 
-final class DictionaryManager {
+final class DictionaryManager: WordSource {
     static let shared = DictionaryManager()
 
     private var englishWords: Set<String> = []
@@ -61,6 +61,22 @@ final class DictionaryManager {
 
         let elapsed = CFAbsoluteTimeGetCurrent() - start
         print("[LayoutSwitcher] Dictionaries loaded: EN=\(enCount) words, UA=\(uaCount) words (\(String(format: "%.1f", elapsed * 1000))ms)")
+    }
+
+    // MARK: - WordSource
+
+    func isWord(_ word: String, language: Language) -> Bool {
+        switch language {
+        case .english: return isEnglishWord(word)
+        case .ukrainian: return isUkrainianWord(word)
+        }
+    }
+
+    func isPrefix(_ prefix: String, language: Language) -> Bool {
+        switch language {
+        case .english: return isEnglishPrefix(prefix)
+        case .ukrainian: return isUkrainianPrefix(prefix)
+        }
     }
 
     // MARK: - Public API

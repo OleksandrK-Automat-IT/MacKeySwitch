@@ -116,6 +116,13 @@ struct KeyMapping {
         return letterKeycodes.contains(keycode)
     }
 
+    /// Number-row keycodes. These are deliberately absent from `isLetterKey` — they are
+    /// never buffered for reconstruction — but they are the strongest password signal,
+    /// so password detection has to look at them separately.
+    static let numberRowKeycodes: Set<UInt16> = [
+        0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19, 0x1D,
+    ]
+
     /// Word boundary keycodes: space, return, tab
     static let wordBoundaryKeycodes: Set<UInt16> = [
         0x31, // space
@@ -123,8 +130,21 @@ struct KeyMapping {
         0x30, // tab
     ]
 
+    /// Boundaries that may trigger a correction — space only.
+    ///
+    /// Return and Tab end a word but must not start one: the correction runs
+    /// asynchronously, ~150ms after the key already went through. By then Return has
+    /// sent the message in a chat client and Tab has moved focus to the next field, so
+    /// the replacement text would be typed into an empty compose box or the wrong field.
+    static let correctionTriggerKeycodes: Set<UInt16> = [
+        0x31, // space
+    ]
+
     /// Backspace keycode
     static let backspaceKeycode: UInt16 = 0x33
+
+    /// Space keycode
+    static let spaceKeycode: UInt16 = 0x31
 
     /// Reconstruct text from buffered keycodes for a given language
     static func reconstruct(keycodes: [(UInt16, Bool)], language: Language) -> String {
@@ -146,4 +166,9 @@ struct KeyMapping {
 enum Language: String {
     case english
     case ukrainian
+
+    /// The only other language this app knows about — the correction target.
+    var opposite: Language {
+        self == .english ? .ukrainian : .english
+    }
 }

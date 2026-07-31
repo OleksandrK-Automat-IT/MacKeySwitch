@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private let settings = SettingsModel.shared
     private var accessibilityTimer: Timer?
-    private var layoutObserverTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Set runtime app icon (Dock/About/Alerts) to match the About-tab logo.
@@ -53,7 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         accessibilityTimer?.invalidate()
-        layoutObserverTimer?.invalidate()
         undoHotkey.unregister()
         monitor.stop()
     }
@@ -103,19 +101,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Layout Observer
 
     private func startLayoutObserver() {
-        layoutObserverTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            self?.updateLayoutIcon()
-        }
+        // One observer drives both effects. Registering the same notification twice ran
+        // the whole dispatch twice per switch for no benefit.
         DistributedNotificationCenter.default().addObserver(
             self,
             selector: #selector(inputSourceChanged),
-            name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
-            object: nil
-        )
-        // Notify monitor about manual layout switches
-        DistributedNotificationCenter.default().addObserver(
-            self,
-            selector: #selector(inputSourceChangedForMonitor),
             name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
             object: nil
         )
@@ -123,13 +113,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func inputSourceChanged() {
+        monitor.notifyManualLayoutSwitch()
         DispatchQueue.main.async { [weak self] in
             self?.updateLayoutIcon()
         }
-    }
-
-    @objc private func inputSourceChangedForMonitor() {
-        monitor.notifyManualLayoutSwitch()
     }
 
     private func updateLayoutIcon() {
@@ -334,10 +321,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let undoItem = NSMenuItem(
             title: "Undo Last Switch",
             action: #selector(undoSwitch),
-            keyEquivalent: "z"
+            keyEquivalent: ""
         )
-        undoItem.keyEquivalentModifierMask = [.control, .shift]
+        undoItem.tag = 102
         menu.addItem(undoItem)
+        syncUndoMenuItem(undoItem)
 
         menu.addItem(NSMenuItem.separator())
 
@@ -389,6 +377,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.undoLastCorrection()
     }
 
+    /// Mirror the shortcut the Carbon hotkey is actually registered with. The menu item
+    /// used to hardcode ⌃⇧Z, so it advertised the wrong shortcut as soon as the user
+    /// recorded a different one in Settings.
+    private func syncUndoMenuItem(_ item: NSMenuItem) {
+        guard settings.undoHotkeyIsEnabled else {
+            item.keyEquivalent = ""
+            item.keyEquivalentModifierMask = []
+            return
+        }
+        let label = SettingsModel.keyCodeLabel(UInt16(settings.undoHotkeyKeyCode))
+        // Only single characters work as a key equivalent; anything else is left blank
+        // and the hotkey still works globally through Carbon.
+        item.keyEquivalent = label.count == 1 ? label.lowercased() : ""
+        item.keyEquivalentModifierMask = NSEvent.ModifierFlags(rawValue: settings.undoHotkeyModifiers)
+    }
+
     @objc private func openSettings() {
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
@@ -425,6 +429,9 @@ extension AppDelegate: NSMenuDelegate {
         }
         if let statsItem = menu.item(withTag: 101) {
             statsItem.title = "Corrections: \(settings.sessionCorrections) (total: \(settings.totalCorrections))"
+        }
+        if let undoItem = menu.item(withTag: 102) {
+            syncUndoMenuItem(undoItem)
         }
     }
 }

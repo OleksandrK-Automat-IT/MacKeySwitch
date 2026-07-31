@@ -1,136 +1,122 @@
 import Foundation
 
-/// 3-stage detection algorithm (like PuntoSwitcher / xneur):
-///   Stage 1: Check exception list (user overrides, self-learned words)
-///   Stage 2: Check dictionaries (50k EN + 50k UA word files + NSSpellChecker)
-///   Stage 3: Impossible bigram analysis (proto-language rules)
+/// Dictionary lookups the detector needs. A protocol so the scoring logic can be
+/// exercised in tests against a fixed word list instead of the 50k bundled corpus.
+protocol WordSource {
+    func isWord(_ word: String, language: Language) -> Bool
+    func isPrefix(_ prefix: String, language: Language) -> Bool
+}
+
+/// Decides whether a buffered word was typed in the wrong keyboard layout.
+///
+/// Every signal contributes to a single confidence score, which is compared against the
+/// threshold picked by the user's Sensitivity setting. Scoring replaces the previous
+/// cascade of independent `if` rules, where the Sensitivity setting had nothing to
+/// attach to and was silently ignored.
 struct LanguageDetector {
-    private static let dict = DictionaryManager.shared
 
-    // MARK: - Early Detection (after 3rd char, real-time)
+    /// Score contributions.
+    ///
+    /// Tuned against the thresholds in `SettingsModel.Sensitivity`: a dictionary hit on
+    /// the target language (14) plus any one supporting signal clears Medium (10), while
+    /// the strongest possible evidence *without* a dictionary hit sums to 9 — deliberately
+    /// just under Medium, so the default setting never rewrites a word neither dictionary
+    /// recognises. Low (20) additionally requires three of the four supporting signals.
+    enum Weight {
+        static let targetIsWord = 14
+        static let currentIsWord = -25
+        static let currentHasImpossibleBigram = 3
+        static let targetPlausible = 2
+        static let targetPrefixValid = 2
+        static let currentPrefixInvalid = 2
+    }
 
-    /// Analyze partial word in real-time. Uses impossible bigrams for fast rejection.
-    /// Returns intended language if wrong layout detected, nil if OK or uncertain.
-    static func detectEarly(
-        keycodes: [(UInt16, Bool)],
-        currentLayout: Language,
-        settings: SettingsModel?
-    ) -> Language? {
-        let enText = KeyMapping.reconstruct(keycodes: keycodes, language: .english)
-        let uaText = KeyMapping.reconstruct(keycodes: keycodes, language: .ukrainian)
+    /// The signals gathered for one candidate correction, kept separate from the score so
+    /// tests can assert on individual signals and on the total independently.
+    struct Evidence: Equatable {
+        /// The other-layout reading is a real word.
+        var targetIsWord = false
+        /// What the user actually typed is a real word — a veto, not just a penalty.
+        var currentIsWord = false
+        /// What the user typed contains a letter pair the current language never uses.
+        var currentHasImpossibleBigram = false
+        /// The other-layout reading is in the right script and has no impossible pairs.
+        var targetPlausible = false
+        /// The other-layout reading starts like some word in the target dictionary.
+        var targetPrefixValid = false
+        /// What the user typed starts like no word in the current dictionary.
+        var currentPrefixInvalid = false
 
-        // Stage 1: Exception list — never correct if the word user is ACTUALLY typing
-        // (in the current layout) is an exception. Checking the OTHER reconstruction
-        // would wrongly block a wrong-layout word whose correct-layout twin happens
-        // to be in exceptions (e.g. typing "gthtdshrf" in EN while "перевірка" is excepted).
-        if let settings = settings {
-            let currentText = currentLayout == .english ? enText : uaText
-            if settings.isException(currentText) {
-                return nil
-            }
+        var score: Int {
+            var total = 0
+            if targetIsWord { total += Weight.targetIsWord }
+            if currentIsWord { total += Weight.currentIsWord }
+            if currentHasImpossibleBigram { total += Weight.currentHasImpossibleBigram }
+            if targetPlausible { total += Weight.targetPlausible }
+            if targetPrefixValid { total += Weight.targetPrefixValid }
+            if currentPrefixInvalid { total += Weight.currentPrefixInvalid }
+            return total
         }
+    }
 
-        switch currentLayout {
-        case .english:
-            // Currently English layout → typed text is Latin (enText)
-            // Check: does enText contain impossible English bigrams?
-            // AND does the Ukrainian reconstruction (uaText) look plausible?
-            let enImpossible = ProtoLanguage.hasImpossibleEnglishBigram(enText)
-            let uaPlausible = ProtoLanguage.couldBeUkrainian(uaText)
+    // MARK: - Scoring
 
-            if enImpossible && uaPlausible {
-                // Also verify the UA prefix exists in dictionary
-                if dict.isUkrainianPrefix(uaText) {
-                    print("[LayoutSwitcher] Early: '\(enText)' has impossible EN bigram, '\(uaText)' is valid UA prefix")
-                    return .ukrainian
-                }
-            }
+    /// Weigh a candidate correction. `currentText` is what the keystrokes produce in the
+    /// active layout; `targetText` is the same keystrokes read in the other layout.
+    static func gatherEvidence(
+        currentText: String,
+        targetText: String,
+        currentLanguage: Language,
+        dictionary: WordSource
+    ) -> Evidence {
+        let target = currentLanguage.opposite
+        var evidence = Evidence()
 
-            // Fallback: prefix-only check (no impossible bigram, but prefix doesn't exist)
-            if !dict.isEnglishPrefix(enText) && dict.isUkrainianPrefix(uaText) {
-                print("[LayoutSwitcher] Early: '\(enText)' not a valid EN prefix, '\(uaText)' is valid UA prefix")
-                return .ukrainian
-            }
+        evidence.currentIsWord = dictionary.isWord(currentText, language: currentLanguage)
+        evidence.targetIsWord = dictionary.isWord(targetText, language: target)
+        evidence.currentHasImpossibleBigram =
+            ProtoLanguage.hasImpossibleBigram(currentText, language: currentLanguage)
+        evidence.targetPlausible = ProtoLanguage.couldBe(targetText, language: target)
+        evidence.targetPrefixValid = dictionary.isPrefix(targetText, language: target)
+        evidence.currentPrefixInvalid = !dictionary.isPrefix(currentText, language: currentLanguage)
 
-        case .ukrainian:
-            // Currently Ukrainian layout → typed text is Cyrillic (uaText)
-            let uaImpossible = ProtoLanguage.hasImpossibleUkrainianBigram(uaText)
-            let enPlausible = ProtoLanguage.couldBeEnglish(enText)
-
-            if uaImpossible && enPlausible {
-                if dict.isEnglishPrefix(enText) {
-                    print("[LayoutSwitcher] Early: '\(uaText)' has impossible UA bigram, '\(enText)' is valid EN prefix")
-                    return .english
-                }
-            }
-
-            if !dict.isUkrainianPrefix(uaText) && dict.isEnglishPrefix(enText) {
-                print("[LayoutSwitcher] Early: '\(uaText)' not a valid UA prefix, '\(enText)' is valid EN prefix")
-                return .english
-            }
-        }
-
-        return nil
+        return evidence
     }
 
     // MARK: - Full Word Detection (on word boundary)
 
-    /// Analyze complete word using all 3 stages.
+    /// Analyse a completed word. Returns the language it should be retyped in, or nil to
+    /// leave it alone.
     static func detectIntended(
         keycodes: [(UInt16, Bool)],
         currentLayout: Language,
-        threshold: Double = 10.0,
-        settings: SettingsModel?
+        threshold: Int,
+        settings: SettingsModel?,
+        dictionary: WordSource = DictionaryManager.shared
     ) -> Language? {
-        let enWord = KeyMapping.reconstruct(keycodes: keycodes, language: .english)
-        let uaWord = KeyMapping.reconstruct(keycodes: keycodes, language: .ukrainian)
+        let target = currentLayout.opposite
+        let currentText = KeyMapping.reconstruct(keycodes: keycodes, language: currentLayout)
+        let targetText = KeyMapping.reconstruct(keycodes: keycodes, language: target)
 
-        // Stage 1: Exception list — see detectEarly for rationale (check only current layout).
-        if let settings = settings {
-            let currentWord = currentLayout == .english ? enWord : uaWord
-            if settings.isException(currentWord) {
-                print("[LayoutSwitcher] Word '\(currentWord)' is in exception list, skipping")
-                return nil
-            }
+        // Exceptions are keyed on what the user actually typed. Checking the other
+        // reading instead would block a genuinely wrong-layout word whose correct-layout
+        // twin happens to be excepted.
+        if let settings = settings, settings.isException(currentText) {
+            debugLog("[LayoutSwitcher] '\(currentText)' is an exception, skipping")
+            return nil
         }
 
-        // Stage 2: Dictionary lookup
-        let enIsWord = dict.isEnglishWord(enWord)
-        let uaIsWord = dict.isUkrainianWord(uaWord)
+        let evidence = gatherEvidence(
+            currentText: currentText,
+            targetText: targetText,
+            currentLanguage: currentLayout,
+            dictionary: dictionary
+        )
+        let score = evidence.score
 
-        print("[LayoutSwitcher] Full word: EN '\(enWord)' dict=\(enIsWord), UA '\(uaWord)' dict=\(uaIsWord)")
+        debugLog("[LayoutSwitcher] '\(currentText)' -> '\(targetText)': score \(score) "
+                 + "vs threshold \(threshold) \(evidence)")
 
-        switch currentLayout {
-        case .english:
-            // Currently English. If UA reconstruction is a real word and EN is not → switch
-            if uaIsWord && !enIsWord {
-                return .ukrainian
-            }
-        case .ukrainian:
-            // Currently Ukrainian. If EN reconstruction is a real word and UA is not → switch
-            if enIsWord && !uaIsWord {
-                return .english
-            }
-        }
-
-        // Stage 3: Impossible bigram analysis (if dictionaries didn't help)
-        switch currentLayout {
-        case .english:
-            let enImpossible = ProtoLanguage.hasImpossibleEnglishBigram(enWord)
-            let uaPlausible = ProtoLanguage.couldBeUkrainian(uaWord)
-            if enImpossible && uaPlausible && !enIsWord {
-                print("[LayoutSwitcher] Stage 3: EN '\(enWord)' has impossible bigrams, UA '\(uaWord)' plausible")
-                return .ukrainian
-            }
-        case .ukrainian:
-            let uaImpossible = ProtoLanguage.hasImpossibleUkrainianBigram(uaWord)
-            let enPlausible = ProtoLanguage.couldBeEnglish(enWord)
-            if uaImpossible && enPlausible && !uaIsWord {
-                print("[LayoutSwitcher] Stage 3: UA '\(uaWord)' has impossible bigrams, EN '\(enWord)' plausible")
-                return .english
-            }
-        }
-
-        return nil
+        return score >= threshold ? target : nil
     }
 }

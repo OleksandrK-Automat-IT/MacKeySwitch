@@ -23,21 +23,26 @@ final class KeyboardMonitor {
     /// Defaults to false until explicitly set true — prevents any UN call on first run.
     static var notificationsAvailable: Bool = false
 
+    /// Stamped into every event this app posts, and checked in the tap callback.
+    /// The corrections are typed back into the session tap the monitor itself listens on,
+    /// so without a marker the app re-reads its own output. `typeString` makes that acute:
+    /// it posts unicode on virtual key 0, which is the keycode for "a", so every corrected
+    /// character used to look like a fresh letter keystroke.
+    private static let syntheticEventMarker: Int64 = 0x4D4B_5357 // 'MKSW'
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
     // Buffer of (keycode, isShifted) for current word
     private var keyBuffer: [(UInt16, Bool)] = []
-    private var charCount: Int = 0
+
+    /// Password shape of the current run of keystrokes, fed digits as well as letters.
+    private var passwordHeuristic = PasswordHeuristic()
 
     // Track the language when word started
     private var wordStartLayout: Language?
 
     var isEnabled: Bool = true
-    private var isCorrecting: Bool = false
-
-    // Early detection: flag set after 3rd char, correction happens at word boundary
-    private var pendingSwitch: Language? = nil
 
     // Serial queue for corrections
     private let correctionQueue = DispatchQueue(label: "com.layoutswitcher.correction")
@@ -50,7 +55,6 @@ final class KeyboardMonitor {
     // Undo support: store original text and layout before correction
     private var lastOriginalText: String?
     private var lastOriginalLayout: Language?
-    private var lastCorrectedText: String?
 
     // Manual layout switch detection: suppress auto-switch for first word after manual switch
     private var lastManualSwitchTime: Date?
@@ -63,14 +67,17 @@ final class KeyboardMonitor {
     // Lock for fields shared between main (handleEvent) and correctionQueue (performCorrection)
     private let stateLock = NSLock()
 
+    /// True while a correction is being typed. Written on `correctionQueue`, read on the
+    /// main thread from `handleEvent`, so every access goes through the lock. Callers must
+    /// not already hold `stateLock` — NSLock is not recursive.
+    private var _isCorrecting: Bool = false
+    private var isCorrecting: Bool {
+        get { stateLock.lock(); defer { stateLock.unlock() }; return _isCorrecting }
+        set { stateLock.lock(); _isCorrecting = newValue; stateLock.unlock() }
+    }
+
     // Callback for undo hotkey
     var onUndoRequest: (() -> Void)?
-
-    // Password detection
-    private var hasUpperCase = false
-    private var hasLowerCase = false
-    private var hasDigit = false
-    private var hasSymbol = false
 
     var settings: SettingsModel?
 
@@ -111,7 +118,7 @@ final class KeyboardMonitor {
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
-        print("[LayoutSwitcher] PuntoSwitcher-style monitor active (3-stage detection, self-learning).")
+        print("[LayoutSwitcher] Monitor active (word-boundary detection, self-learning).")
     }
 
     func stop() {
@@ -137,6 +144,12 @@ final class KeyboardMonitor {
         }
 
         guard type == .keyDown else { return }
+
+        // Ignore the keystrokes this app posts itself — see `syntheticEventMarker`.
+        if event.getIntegerValueField(.eventSourceUserData) == Self.syntheticEventMarker {
+            return
+        }
+
         let effectiveEnabled = settings?.isEnabled ?? isEnabled
         guard effectiveEnabled else { return }
 
@@ -177,183 +190,110 @@ final class KeyboardMonitor {
         // --- Self-learning: detect undo pattern ---
         // If user presses backspace right after a correction, they're undoing it
         if keycode == KeyMapping.backspaceKeycode {
-            if let lastWord = lastCorrectedWord,
-               let lastTime = lastCorrectionTime,
-               Date().timeIntervalSince(lastTime) < 5.0 {
-                backspaceCountAfterCorrection += 1
-                // If they backspaced enough to erase the corrected word, add ONLY
-                // the corrected form to exceptions (per user preference — keep the
-                // exception list clean, without gibberish wrong-layout twins).
-                if backspaceCountAfterCorrection >= lastWord.count {
-                    settings?.addException(lastWord)
-                    stateLock.lock()
-                    lastCorrectedWord = nil
-                    lastCorrectionTime = nil
-                    backspaceCountAfterCorrection = 0
-                    lastOriginalText = nil
-                    lastOriginalLayout = nil
-                    lastCorrectedText = nil
-                    stateLock.unlock()
-                }
-            }
+            handleBackspaceAfterCorrection()
+
             // Shrink buffer
             if !keyBuffer.isEmpty {
                 keyBuffer.removeLast()
-                charCount = max(0, charCount - 1)
             }
+            passwordHeuristic.removeLast()
             if keyBuffer.isEmpty {
                 wordStartLayout = nil
-                resetPasswordFlags()
+                passwordHeuristic.reset()
             }
             return
         }
 
         // Any non-backspace key clears the undo tracking AND the undo-target snapshot.
-        // Otherwise Ctrl+Shift+Z 2 words later would Option+Shift+Left-select the wrong word
-        // and replace it with the previous correction's original text.
-        if lastCorrectedWord != nil || lastOriginalText != nil {
-            stateLock.lock()
-            lastCorrectedWord = nil
-            lastCorrectionTime = nil
-            backspaceCountAfterCorrection = 0
-            lastOriginalText = nil
-            lastOriginalLayout = nil
-            lastCorrectedText = nil
-            stateLock.unlock()
-        }
+        // Otherwise the undo hotkey 2 words later would Option+Shift+Left-select the wrong
+        // word and replace it with the previous correction's original text.
+        clearCorrectionSnapshot()
 
         // Word boundary — perform correction here (never mid-word)
         if KeyMapping.wordBoundaryKeycodes.contains(keycode) {
-            let minLen = settings?.minWordLength ?? 2
-            let shouldSkip = skipCurrentWordCorrection
-            if !shouldSkip && keyBuffer.count >= minLen && !isCorrecting && !looksLikePassword() {
-                let layout = wordStartLayout ?? currentLang
-                if let pending = pendingSwitch {
-                    // Early detection already decided — use it directly
-                    triggerCorrectionWithKnownTarget(layout: layout, intended: pending)
-                } else {
-                    // No early detection — do full word analysis
-                    triggerFullWordCorrection(layout: layout)
-                }
-            } else if shouldSkip {
-                print("[LayoutSwitcher] Skipped correction for this word (manual layout switch detected)")
+            if KeyMapping.correctionTriggerKeycodes.contains(keycode) {
+                maybeCorrect(currentLanguage: currentLang)
             }
             resetBuffer()
             return
         }
 
-        // Only buffer letter keys
+        // Feed the password heuristic before the letter-only guard below. Doing it after
+        // meant the digit and symbol flags could never be set — those keys are not letter
+        // keys — so the heuristic never fired at all.
+        passwordHeuristic.record(keycode: keycode, isShifted: isShifted)
+
         guard KeyMapping.isLetterKey(keycode) else { return }
 
         // Track layout at word start
         if keyBuffer.isEmpty {
             wordStartLayout = currentLang
-            resetPasswordFlags()
         }
 
-        // Update password detection flags
-        updatePasswordFlags(keycode: keycode, isShifted: isShifted)
-
         keyBuffer.append((keycode, isShifted))
-        charCount += 1
 
         // Cap buffer length — avoids unbounded growth in fields without spaces (URLs, passwords)
         if keyBuffer.count > maxBufferLength {
             // Treat as non-word — reset quietly, user is probably typing something structural.
             resetBuffer()
+        }
+    }
+
+    /// Count backspaces immediately after a correction. Enough of them to wipe the word
+    /// means the user rejected it, so it becomes an exception.
+    private func handleBackspaceAfterCorrection() {
+        stateLock.lock()
+        let word = lastCorrectedWord
+        let time = lastCorrectionTime
+        stateLock.unlock()
+
+        guard let lastWord = word, let lastTime = time,
+              Date().timeIntervalSince(lastTime) < 5.0 else { return }
+
+        backspaceCountAfterCorrection += 1
+
+        // A correction types the word *and* a trailing space, so erasing the word takes
+        // count + 1 backspaces. Comparing against count alone fired one keystroke early,
+        // while a letter was still on screen.
+        guard backspaceCountAfterCorrection >= lastWord.count + 1 else { return }
+
+        // Record only the corrected form — keeps the exception list free of the
+        // gibberish wrong-layout twins.
+        settings?.addException(lastWord)
+        clearCorrectionSnapshot()
+    }
+
+    private func clearCorrectionSnapshot() {
+        stateLock.lock()
+        let hadSnapshot = lastCorrectedWord != nil || lastOriginalText != nil
+        if hadSnapshot {
+            lastCorrectedWord = nil
+            lastCorrectionTime = nil
+            lastOriginalText = nil
+            lastOriginalLayout = nil
+        }
+        stateLock.unlock()
+        if hadSnapshot {
+            backspaceCountAfterCorrection = 0
+        }
+    }
+
+    /// Decide whether the just-finished word should be retyped in the other layout.
+    private func maybeCorrect(currentLanguage: Language) {
+        if skipCurrentWordCorrection {
+            debugLog("[LayoutSwitcher] Skipped correction for this word (manual layout switch)")
             return
         }
 
-        // REAL-TIME: check after 3rd character using impossible bigrams
-        if charCount >= 3 && !isCorrecting && !looksLikePassword() {
-            let layout = wordStartLayout ?? currentLang
-            checkEarlyDetection(layout: layout)
-        }
-    }
+        let minLen = settings?.minWordLength ?? 2
+        guard keyBuffer.count >= minLen,
+              !isCorrecting,
+              !passwordHeuristic.looksLikePassword else { return }
 
-    // MARK: - Password Detection
-
-    private func resetPasswordFlags() {
-        hasUpperCase = false
-        hasLowerCase = false
-        hasDigit = false
-        hasSymbol = false
-    }
-
-    private func updatePasswordFlags(keycode: UInt16, isShifted: Bool) {
-        if isShifted {
-            hasUpperCase = true
-        } else {
-            hasLowerCase = true
-        }
-        // Number row keycodes
-        let numberKeys: Set<UInt16> = [0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19, 0x1D]
-        if numberKeys.contains(keycode) {
-            if isShifted {
-                hasSymbol = true
-            } else {
-                hasDigit = true
-            }
-        }
-    }
-
-    /// Passwords typically have mixed case + digits + symbols, 6+ chars
-    private func looksLikePassword() -> Bool {
-        charCount >= 6 && hasUpperCase && hasLowerCase && (hasDigit || hasSymbol)
-    }
-
-    // MARK: - Early Detection (after 3rd char — sets flag, correction at word boundary)
-
-    private func checkEarlyDetection(layout: Language) {
-        guard let intended = LanguageDetector.detectEarly(
-            keycodes: keyBuffer,
-            currentLayout: layout,
-            settings: settings
-        ) else {
-            // Reset pending if new chars invalidate it
-            pendingSwitch = nil
-            return
-        }
-
-        let enText = KeyMapping.reconstruct(keycodes: keyBuffer, language: .english)
-        let uaText = KeyMapping.reconstruct(keycodes: keyBuffer, language: .ukrainian)
-        print("[LayoutSwitcher] Early detect after \(charCount) chars: \(layout.rawValue) -> \(intended.rawValue) (EN='\(enText)' UA='\(uaText)')")
-
-        // Just set the flag — actual correction happens at word boundary
-        pendingSwitch = intended
-    }
-
-    // MARK: - Correction with known target (from early detection)
-
-    private func triggerCorrectionWithKnownTarget(layout: Language, intended: Language) {
+        let layout = wordStartLayout ?? currentLanguage
         let buffer = keyBuffer
-        let count = charCount
-        let delayMs = settings?.correctionDelayMs ?? 50
-        let notify = settings?.showNotifications ?? false
-        let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
-        let originalText = KeyMapping.reconstruct(keycodes: buffer, language: layout)
-
-        print("[LayoutSwitcher] Correcting (early-flagged): \(layout.rawValue) -> \(intended.rawValue): '\(correctText)'")
-
-        correctionQueue.async { [weak self] in
-            self?.performCorrection(
-                count: count,
-                correctText: correctText,
-                originalText: originalText,
-                from: layout,
-                to: intended,
-                delayMs: delayMs,
-                notify: notify,
-                addSpace: true
-            )
-        }
-    }
-
-    // MARK: - Full Word Correction (on word boundary)
-
-    private func triggerFullWordCorrection(layout: Language) {
-        let buffer = keyBuffer
-        let count = charCount
+        let threshold = settings?.sensitivity.scoreThreshold
+            ?? SettingsModel.Sensitivity.medium.scoreThreshold
         let delayMs = settings?.correctionDelayMs ?? 50
         let notify = settings?.showNotifications ?? false
 
@@ -363,6 +303,7 @@ final class KeyboardMonitor {
             guard let intended = LanguageDetector.detectIntended(
                 keycodes: buffer,
                 currentLayout: layout,
+                threshold: threshold,
                 settings: self.settings
             ) else {
                 return
@@ -370,17 +311,14 @@ final class KeyboardMonitor {
 
             let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
             let originalText = KeyMapping.reconstruct(keycodes: buffer, language: layout)
-            print("[LayoutSwitcher] FULL switch: \(layout.rawValue) -> \(intended.rawValue): '\(correctText)'")
 
             self.performCorrection(
-                count: count,
                 correctText: correctText,
                 originalText: originalText,
                 from: layout,
                 to: intended,
                 delayMs: delayMs,
-                notify: notify,
-                addSpace: true
+                notify: notify
             )
         }
     }
@@ -388,31 +326,33 @@ final class KeyboardMonitor {
     // MARK: - Correction
 
     private func performCorrection(
-        count: Int,
         correctText: String,
         originalText: String,
         from: Language,
         to: Language,
         delayMs: Int,
-        notify: Bool,
-        addSpace: Bool
+        notify: Bool
     ) {
         isCorrecting = true
         let delayUs = UInt32(max(delayMs, 50) * 1000)
 
-        // Wait for the triggering keystroke (space/letter) to fully process
+        debugLog("[LayoutSwitcher] Correcting \(from.rawValue) -> \(to.rawValue): "
+                 + "'\(originalText)' -> '\(correctText)'")
+
+        // Wait for the triggering space to fully process
         usleep(50_000)
 
-        // Use Cmd+A-style word selection: Shift+Option+Left selects whole word backward
-        // This is more reliable than counting characters
-        if addSpace {
-            // Delete trailing space first
-            simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
-            usleep(10_000)
-        }
+        // Delete the trailing space
+        simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
+        usleep(10_000)
 
-        // Select the whole word backward with Option+Shift+Left (selects by word)
-        simulateKey(keycode: 0x7B, flags: CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | CGEventFlags.maskAlternate.rawValue))
+        // Select the whole word backward with Option+Shift+Left (selects by word).
+        // More reliable than counting characters.
+        simulateKey(
+            keycode: 0x7B,
+            flags: CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue
+                                | CGEventFlags.maskAlternate.rawValue)
+        )
         usleep(10_000)
 
         // Delete the selection
@@ -429,9 +369,7 @@ final class KeyboardMonitor {
 
         // Retype correct text
         typeString(correctText)
-        if addSpace {
-            simulateKey(keycode: 0x31, flags: []) // space
-        }
+        simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
 
         // Publish post-correction state on main, under the lock, so handleEvent
         // never observes a torn view of these fields.
@@ -439,15 +377,14 @@ final class KeyboardMonitor {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.stateLock.lock()
-            self.isCorrecting = false
+            self._isCorrecting = false
             self.lastCorrectedWord = correctText
-            self.lastCorrectedText = correctText
             self.lastCorrectionTime = now
-            self.backspaceCountAfterCorrection = 0
             self.lastOriginalText = originalText
             self.lastOriginalLayout = from
             self.stateLock.unlock()
 
+            self.backspaceCountAfterCorrection = 0
             self.settings?.recordCorrection()
         }
 
@@ -463,7 +400,7 @@ final class KeyboardMonitor {
     func notifyManualLayoutSwitch() {
         guard !isCorrecting else { return }
         lastManualSwitchTime = Date()
-        print("[LayoutSwitcher] Manual layout switch detected, will suppress auto-switch for next word")
+        debugLog("[LayoutSwitcher] Manual layout switch detected, suppressing next word")
     }
 
     // MARK: - Undo Last Correction
@@ -474,6 +411,7 @@ final class KeyboardMonitor {
         let originalTextOpt = lastOriginalText
         let originalLayoutOpt = lastOriginalLayout
         let correctionTimeOpt = lastCorrectionTime
+        let correctedForm = lastCorrectedWord ?? ""
         stateLock.unlock()
 
         guard let originalText = originalTextOpt,
@@ -492,7 +430,11 @@ final class KeyboardMonitor {
             let delayUs = UInt32(max(delayMs, 50) * 1000)
 
             // Select the corrected word + trailing space backward
-            self.simulateKey(keycode: 0x7B, flags: CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue | CGEventFlags.maskAlternate.rawValue))
+            self.simulateKey(
+                keycode: 0x7B,
+                flags: CGEventFlags(rawValue: CGEventFlags.maskShift.rawValue
+                                    | CGEventFlags.maskAlternate.rawValue)
+            )
             usleep(10_000)
 
             // Delete the selection
@@ -507,28 +449,27 @@ final class KeyboardMonitor {
 
             // Retype original text + space
             self.typeString(originalText)
-            self.simulateKey(keycode: 0x31, flags: []) // space
+            self.simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
             usleep(5_000)
 
-            // Snapshot corrected form then clear all undo state atomically on main thread
             DispatchQueue.main.async {
                 self.stateLock.lock()
-                let correctedForm = self.lastCorrectedWord ?? ""
-                self.isCorrecting = false
+                self._isCorrecting = false
                 self.lastOriginalText = nil
                 self.lastOriginalLayout = nil
-                self.lastCorrectedText = nil
                 self.lastCorrectedWord = nil
                 self.lastCorrectionTime = nil
                 self.stateLock.unlock()
 
-                // Add ONLY the corrected form to exceptions (per user preference).
+                self.backspaceCountAfterCorrection = 0
+
+                // Record only the corrected form (per user preference).
                 if !correctedForm.isEmpty {
                     self.settings?.addException(correctedForm)
                 }
             }
 
-            print("[LayoutSwitcher] Undo: restored '\(originalText)' (\(originalLayout.rawValue)), added to exceptions")
+            debugLog("[LayoutSwitcher] Undo: restored '\(originalText)' (\(originalLayout.rawValue))")
         }
     }
 
@@ -536,11 +477,15 @@ final class KeyboardMonitor {
 
     private func resetBuffer() {
         keyBuffer.removeAll()
-        charCount = 0
         wordStartLayout = nil
-        pendingSwitch = nil
         skipCurrentWordCorrection = false
-        resetPasswordFlags()
+        passwordHeuristic.reset()
+    }
+
+    /// Post an event, stamped so the tap callback can tell it apart from real typing.
+    private func post(_ event: CGEvent) {
+        event.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+        event.post(tap: .cgAnnotatedSessionEventTap)
     }
 
     private func simulateKey(keycode: UInt16, flags: CGEventFlags) {
@@ -550,9 +495,9 @@ final class KeyboardMonitor {
         }
         keyDown.flags = flags
         keyUp.flags = flags
-        keyDown.post(tap: .cgAnnotatedSessionEventTap)
+        post(keyDown)
         usleep(2_000)
-        keyUp.post(tap: .cgAnnotatedSessionEventTap)
+        post(keyUp)
         usleep(5_000)
     }
 
@@ -564,11 +509,12 @@ final class KeyboardMonitor {
             }
             let utf16 = Array(str.utf16)
             event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-            event.post(tap: .cgAnnotatedSessionEventTap)
+            post(event)
             usleep(2_000)
 
-            let upEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
-            upEvent?.post(tap: .cgAnnotatedSessionEventTap)
+            if let upEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+                post(upEvent)
+            }
             usleep(5_000)
         }
     }

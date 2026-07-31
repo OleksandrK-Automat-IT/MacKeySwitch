@@ -43,13 +43,15 @@ final class SettingsModel: ObservableObject {
             }
         }
 
-        /// Score threshold — lower = more aggressive switching
-        var threshold: Double {
+        /// Confidence a candidate correction must reach before it is applied —
+        /// lower = more aggressive switching. Compared against `LanguageDetector.Evidence.score`;
+        /// see `LanguageDetector.Weight` for how these numbers line up with the signals.
+        var scoreThreshold: Int {
             switch self {
-            case .low: return 20.0
-            case .medium: return 10.0
-            case .high: return 5.0
-            case .veryHigh: return 2.0
+            case .low: return 20
+            case .medium: return 10
+            case .high: return 5
+            case .veryHigh: return 2
             }
         }
     }
@@ -108,8 +110,19 @@ final class SettingsModel: ObservableObject {
     // MARK: - Self-Learning (exception words that should NOT be corrected)
 
     @Published var exceptionWords: [String] {
-        didSet { defaults.set(exceptionWords, forKey: "exceptionWords") }
+        didSet {
+            defaults.set(exceptionWords, forKey: "exceptionWords")
+            exceptionSet = Set(exceptionWords)
+        }
     }
+
+    /// Membership mirror of `exceptionWords`. The list is consulted on every word boundary
+    /// and grows without bound through self-learning, so a linear scan is the wrong shape.
+    private var exceptionSet: Set<String> = []
+
+    /// Ceiling on the self-learned exception list. Reached only by pathological usage;
+    /// without it a user who keeps undoing corrections grows the list forever.
+    static let maxExceptionWords = 5000
 
     // MARK: - Undo Hotkey
 
@@ -228,7 +241,10 @@ final class SettingsModel: ObservableObject {
         self.customEnglishWords = defaults.object(forKey: "customEnglishWords") as? [String] ?? []
         self.customUkrainianWords = defaults.object(forKey: "customUkrainianWords") as? [String] ?? []
 
-        self.exceptionWords = defaults.object(forKey: "exceptionWords") as? [String] ?? []
+        let storedExceptions = defaults.object(forKey: "exceptionWords") as? [String] ?? []
+        self.exceptionWords = storedExceptions
+        // didSet does not fire during init, so seed the membership mirror by hand.
+        self.exceptionSet = Set(storedExceptions)
 
         self.customEnglishDictionaryPaths = defaults.object(forKey: "customEnglishDictionaryPaths") as? [String] ?? []
         self.customUkrainianDictionaryPaths = defaults.object(forKey: "customUkrainianDictionaryPaths") as? [String] ?? []
@@ -265,14 +281,16 @@ final class SettingsModel: ObservableObject {
 
     func addException(_ word: String) {
         let lower = word.lowercased()
-        if !exceptionWords.contains(lower) {
-            exceptionWords.append(lower)
-            print("[LayoutSwitcher] Self-learning: added '\(lower)' to exceptions")
+        guard !lower.isEmpty, !exceptionSet.contains(lower) else { return }
+        if exceptionWords.count >= Self.maxExceptionWords {
+            exceptionWords.removeFirst()
         }
+        exceptionWords.append(lower)
+        debugLog("[LayoutSwitcher] Self-learning: added '\(lower)' to exceptions")
     }
 
     func isException(_ word: String) -> Bool {
-        exceptionWords.contains(word.lowercased())
+        exceptionSet.contains(word.lowercased())
     }
 
     func isAppExcluded(bundleID: String) -> Bool {

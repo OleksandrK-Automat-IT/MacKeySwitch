@@ -20,10 +20,26 @@ final class InputSourceManager {
         return Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
     }
 
+    /// Latin layouts this app treats as "English". Matched exactly: a substring test for
+    /// "US" also matches unrelated third-party layouts with "US" anywhere in their ID.
+    static let englishSourceIDs: Set<String> = [
+        "com.apple.keylayout.US",
+        "com.apple.keylayout.USInternational-PC",
+        "com.apple.keylayout.USExtended",
+        "com.apple.keylayout.ABC",
+        "com.apple.keylayout.ABC-QWERTZ",
+        "com.apple.keylayout.ABC-AZERTY",
+        "com.apple.keylayout.British",
+        "com.apple.keylayout.British-PC",
+        "com.apple.keylayout.Australian",
+        "com.apple.keylayout.Canadian",
+        "com.apple.keylayout.Irish",
+    ]
+
     /// Returns the current language if it's English or Ukrainian, nil otherwise
     static func currentLanguage() -> Language? {
         let sourceID = currentInputSourceID()
-        if sourceID.contains("US") || sourceID.contains("ABC") || sourceID.contains("British") {
+        if englishSourceIDs.contains(sourceID) {
             return .english
         }
         // Check all known Ukrainian variants
@@ -69,7 +85,7 @@ final class InputSourceManager {
             let id = Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
             switch language {
             case .english:
-                if id.contains("US") || id.contains("ABC") {
+                if englishSourceIDs.contains(id) {
                     TISSelectInputSource(source)
                     return
                 }

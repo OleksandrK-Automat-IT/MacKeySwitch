@@ -23,5 +23,10 @@ let package = Package(
                 .linkedFramework("Cocoa"),
             ]
         ),
+        .testTarget(
+            name: "LayoutSwitcherTests",
+            dependencies: ["LayoutSwitcher"],
+            path: "Tests/LayoutSwitcherTests"
+        ),
     ]
 )
