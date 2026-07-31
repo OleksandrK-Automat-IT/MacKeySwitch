@@ -297,22 +297,29 @@ final class KeyboardMonitor {
         let delayMs = settings?.correctionDelayMs ?? 50
         let notify = settings?.showNotifications ?? false
 
+        // Detection runs here, on the main thread, rather than on the correction queue.
+        // It consults NSSpellChecker, which belongs to AppKit's main thread, and a lookup
+        // costs ~0.13ms — cheap enough for a word boundary. Deciding before dispatching
+        // also lets the correction slot be claimed synchronously, below.
+        guard let intended = LanguageDetector.detectIntended(
+            keycodes: buffer,
+            currentLayout: layout,
+            threshold: threshold,
+            settings: settings
+        ) else {
+            return
+        }
+
+        let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
+        let originalText = KeyMapping.reconstruct(keycodes: buffer, language: layout)
+
+        // Claim the slot before leaving the main thread. Setting it inside performCorrection
+        // left a window in which a second word boundary could start a second correction
+        // while the first was still queued.
+        isCorrecting = true
+
         correctionQueue.async { [weak self] in
-            guard let self = self else { return }
-
-            guard let intended = LanguageDetector.detectIntended(
-                keycodes: buffer,
-                currentLayout: layout,
-                threshold: threshold,
-                settings: self.settings
-            ) else {
-                return
-            }
-
-            let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
-            let originalText = KeyMapping.reconstruct(keycodes: buffer, language: layout)
-
-            self.performCorrection(
+            self?.performCorrection(
                 correctText: correctText,
                 originalText: originalText,
                 from: layout,
@@ -333,7 +340,7 @@ final class KeyboardMonitor {
         delayMs: Int,
         notify: Bool
     ) {
-        isCorrecting = true
+        // isCorrecting was claimed by the caller, on the main thread.
         let delayUs = UInt32(max(delayMs, 50) * 1000)
 
         debugLog("[LayoutSwitcher] Correcting \(from.rawValue) -> \(to.rawValue): "

@@ -93,23 +93,35 @@ struct ProtoLanguage {
         return false
     }
 
-    /// Quick check: can this text possibly be English? (Latin script, no impossible bigrams)
-    static func couldBeEnglish(_ word: String) -> Bool {
+    /// Whether every character belongs to the language's own alphabet.
+    ///
+    /// Worth checking before consulting a spell checker, which strips punctuation and so
+    /// calls ",elm" a correctly spelled English word on the strength of "elm". The buffer
+    /// really does contain punctuation: several US-layout punctuation keys are Ukrainian
+    /// letters, so "будь" arrives as ",elm".
+    static func usesScript(_ word: String, of language: Language) -> Bool {
         let lower = word.lowercased()
         guard !lower.isEmpty else { return false }
-        guard lower.allSatisfy({ $0.isASCII && $0.isLetter }) else { return false }
-        return !hasImpossibleEnglishBigram(lower)
+        switch language {
+        case .english:
+            return lower.allSatisfy { $0.isASCII && $0.isLetter }
+        case .ukrainian:
+            return lower.allSatisfy { char in
+                guard let scalar = char.unicodeScalars.first else { return false }
+                return (0x0400...0x04FF).contains(scalar.value)
+            }
+        }
+    }
+
+    /// Quick check: can this text possibly be English? (Latin script, no impossible bigrams)
+    static func couldBeEnglish(_ word: String) -> Bool {
+        guard usesScript(word, of: .english) else { return false }
+        return !hasImpossibleEnglishBigram(word)
     }
 
     /// Quick check: can this text possibly be Ukrainian? (Cyrillic script, no impossible bigrams)
     static func couldBeUkrainian(_ word: String) -> Bool {
-        let lower = word.lowercased()
-        guard !lower.isEmpty else { return false }
-        guard lower.allSatisfy({ char in
-            guard let scalar = char.unicodeScalars.first else { return false }
-            let v = scalar.value
-            return (v >= 0x0400 && v <= 0x04FF)
-        }) else { return false }
-        return !hasImpossibleUkrainianBigram(lower)
+        guard usesScript(word, of: .ukrainian) else { return false }
+        return !hasImpossibleUkrainianBigram(word)
     }
 }

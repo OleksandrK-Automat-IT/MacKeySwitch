@@ -163,7 +163,7 @@ struct KeyMapping {
     }
 }
 
-enum Language: String {
+enum Language: String, CaseIterable {
     case english
     case ukrainian
 

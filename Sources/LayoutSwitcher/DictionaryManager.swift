@@ -65,11 +65,21 @@ final class DictionaryManager: WordSource {
 
     // MARK: - WordSource
 
+    /// The bundled list first — a plain set lookup, and it holds the user's custom words —
+    /// then the system dictionary, which is what actually provides usable coverage.
+    ///
+    /// The bundled Ukrainian list is missing most everyday vocabulary: it contains no word
+    /// beginning "при" at all, nor "дякую", "добре", "треба", "тобі". Since a correction
+    /// cannot reach the confidence threshold without a dictionary hit, those words were
+    /// never corrected — the feature looked broken while the detector was working exactly
+    /// as designed on the data it had.
     func isWord(_ word: String, language: Language) -> Bool {
+        let bundled: Bool
         switch language {
-        case .english: return isEnglishWord(word)
-        case .ukrainian: return isUkrainianWord(word)
+        case .english: bundled = isEnglishWord(word)
+        case .ukrainian: bundled = isUkrainianWord(word)
         }
+        return bundled || SystemSpellChecker.shared.isWord(word, language: language)
     }
 
     func isPrefix(_ prefix: String, language: Language) -> Bool {
@@ -81,9 +91,8 @@ final class DictionaryManager: WordSource {
 
     // MARK: - Public API
 
-    /// Check if a word exists in the English dictionary.
-    /// NOTE: NSSpellChecker is not thread-safe and was removed as a fallback;
-    /// bundled dictionaries + impossible-bigram + prefix checks are sufficient.
+    /// Check if a word exists in the bundled English list. Prefer `isWord(_:language:)`,
+    /// which also consults the system dictionary.
     func isEnglishWord(_ word: String) -> Bool {
         let lower = word.lowercased()
         lock.lock(); defer { lock.unlock() }
