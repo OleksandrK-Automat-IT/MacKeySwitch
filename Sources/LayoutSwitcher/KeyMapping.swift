@@ -1,5 +1,28 @@
 import Foundation
 
+/// One buffered keypress: the physical key plus the modifier state that decides which
+/// character it produced.
+///
+/// Caps Lock is carried separately from Shift because the two do not mean the same thing
+/// for every key on this map. Several US-layout punctuation keys are Ukrainian letters
+/// (';' is 'ж', ',' is 'б'), so the same keystroke is case-sensitive in one language and
+/// not in the other — a single "isShifted" flag cannot express that, and reconstructing
+/// with one dropped the capitals of anything typed with Caps Lock on.
+struct Keystroke: Equatable {
+    let keycode: UInt16
+    /// Shift was held. Selects the shifted character map.
+    let shift: Bool
+    /// Caps Lock was on. Inverts the case of letters only, per the macOS convention that
+    /// Shift+Caps Lock types lowercase.
+    let capsLock: Bool
+
+    init(keycode: UInt16, shift: Bool = false, capsLock: Bool = false) {
+        self.keycode = keycode
+        self.shift = shift
+        self.capsLock = capsLock
+    }
+}
+
 // Maps macOS virtual keycodes to characters for English (US) and Ukrainian layouts.
 // Only letter/number keys are mapped — modifiers, arrows, function keys are excluded.
 struct KeyMapping {
@@ -146,18 +169,33 @@ struct KeyMapping {
     /// Space keycode
     static let spaceKeycode: UInt16 = 0x31
 
-    /// Reconstruct text from buffered keycodes for a given language
-    static func reconstruct(keycodes: [(UInt16, Bool)], language: Language) -> String {
+    /// The character one keystroke produces in the given language, or nil for a key this
+    /// map does not cover.
+    ///
+    /// Guaranteed to be exactly one character. The correction erases the old word with a
+    /// counted run of backspaces, so a keystroke that expanded to two characters — or to
+    /// none — would leave the caret in the wrong place and shred the surrounding text.
+    static func character(for stroke: Keystroke, language: Language) -> Character? {
+        let map = stroke.shift ? shifted : unshifted
+        guard let pair = map[stroke.keycode] else { return nil }
+        let base = language == .english ? pair.en : pair.ua
+
+        // Caps Lock only affects letters: ';' stays ';' but 'ж' becomes 'Ж'. Combined with
+        // Shift it types lowercase, which is why this inverts rather than uppercases.
+        guard stroke.capsLock, base.isLetter else { return base }
+        let flipped = stroke.shift ? base.lowercased() : base.uppercased()
+        // A case change that is not one-to-one (no such pair in these alphabets, but the
+        // Unicode rules allow it) would break the backspace count. Keep the original.
+        guard flipped.count == 1, let char = flipped.first else { return base }
+        return char
+    }
+
+    /// Reconstruct text from buffered keystrokes for a given language
+    static func reconstruct(keycodes: [Keystroke], language: Language) -> String {
         var result = ""
-        for (keycode, isShifted) in keycodes {
-            let map = isShifted ? shifted : unshifted
-            guard let pair = map[keycode] else { continue }
-            switch language {
-            case .english:
-                result.append(pair.en)
-            case .ukrainian:
-                result.append(pair.ua)
-            }
+        for stroke in keycodes {
+            guard let char = character(for: stroke, language: language) else { continue }
+            result.append(char)
         }
         return result
     }
@@ -170,5 +208,15 @@ enum Language: String, CaseIterable {
     /// The only other language this app knows about — the correction target.
     var opposite: Language {
         self == .english ? .ukrainian : .english
+    }
+
+    /// Name for display, in whatever language the interface is currently set to.
+    /// `rawValue` is an identifier, not a label — it used to be capitalised and shown
+    /// directly, which left "English"/"Ukrainian" in the UI whatever the chosen language.
+    var localizedName: String {
+        switch self {
+        case .english: return L("language.english")
+        case .ukrainian: return L("language.ukrainian")
+        }
     }
 }

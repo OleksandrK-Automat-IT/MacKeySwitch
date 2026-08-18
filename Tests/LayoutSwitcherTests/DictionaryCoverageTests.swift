@@ -12,13 +12,11 @@ import Foundation
 @Suite struct DictionaryCoverageTests {
 
     /// Keystrokes for a Ukrainian word typed with the US layout still active.
-    private func typedOnUSLayout(_ ukrainian: String) -> [(UInt16, Bool)] {
-        ukrainian.compactMap { char in
-            KeyMapping.unshifted.first { $0.value.ua == char }.map { ($0.key, false) }
-        }
+    private func typedOnUSLayout(_ ukrainian: String) -> [Keystroke] {
+        keycodes(forTypingUkrainian: ukrainian)
     }
 
-    private func correction(for keys: [(UInt16, Bool)], layout: Language) -> Language? {
+    private func correction(for keys: [Keystroke], layout: Language) -> Language? {
         LanguageDetector.detectIntended(
             keycodes: keys,
             currentLayout: layout,
@@ -48,9 +46,7 @@ import Foundation
     @Test(arguments: ["hello", "three", "wisdom", "thanks", "please", "always", "commit",
                       "branch", "review", "should", "people", "system"])
     func everydayEnglishIsNeverRewritten(word: String) {
-        let keys = word.compactMap { char in
-            KeyMapping.unshifted.first { $0.value.en == char }.map { ($0.key, false) }
-        }
+        let keys = keycodes(forTyping: word)
         #expect(correction(for: keys, layout: .english) == nil,
                 "'\(word)' was rewritten as Ukrainian")
     }

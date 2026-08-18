@@ -9,8 +9,8 @@ import Testing
     /// Feeds a string the way the monitor does — every printable key, digits included.
     private func heuristic(after text: String) -> PasswordHeuristic {
         var heuristic = PasswordHeuristic()
-        for (keycode, isShifted) in keycodes(forTyping: text) {
-            heuristic.record(keycode: keycode, isShifted: isShifted)
+        for stroke in keycodes(forTyping: text) {
+            heuristic.record(keycode: stroke.keycode, isShifted: stroke.shift)
         }
         return heuristic
     }

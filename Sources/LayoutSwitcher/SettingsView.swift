@@ -2,42 +2,78 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    /// The tab view's own size, before the window padding around it.
+    ///
+    /// Wide enough for the longest set of tab titles across every shipped language.
+    ///
+    /// Measured, not guessed: `SettingsLayoutTests` lays the real strings out in the system
+    /// font and fails if they do not fit. English needs ~623pt and Ukrainian ~701pt, against
+    /// the 536pt this used to offer — so the bar was compressing in *both* languages, just
+    /// visibly enough to notice in the longer one, where titles truncated to "Загал…" and
+    /// the selected tab's focus ring spilled over its neighbour.
+    ///
+    /// The height fits the General tab, the tallest, without scrolling — checked by
+    /// rendering it, since a Form's height is not something a string measurement predicts.
+    static let contentSize = NSSize(width: 740, height: 560)
+
+    /// Margin between the tab view and the window edge. Also the room the focus ring needs:
+    /// it is drawn *outside* the control's bounds, so a frame flush against the window would
+    /// clip it.
+    static let windowPadding: CGFloat = 16
+
+    /// Single source of truth for the settings window size — AppDelegate sizes the window
+    /// from this rather than repeating the numbers.
+    static let preferredSize = NSSize(
+        width: contentSize.width + windowPadding * 2,
+        height: contentSize.height + windowPadding * 2
+    )
+
     @ObservedObject var settings: SettingsModel
+    /// Observed so every label re-renders the moment the interface language changes —
+    /// switching language should not require reopening the window.
+    @ObservedObject private var l10n = Localization.shared
 
     var body: some View {
         TabView {
             GeneralTab(settings: settings)
                 .tabItem {
-                    Label("General", systemImage: "gear")
+                    Label(L("tab.general"), systemImage: "gear")
                 }
 
             DetectionTab(settings: settings)
                 .tabItem {
-                    Label("Detection", systemImage: "waveform")
+                    Label(L("tab.detection"), systemImage: "waveform")
                 }
 
             PerAppTab(settings: settings)
                 .tabItem {
-                    Label("Per-App Rules", systemImage: "app.badge.checkmark")
+                    Label(L("tab.perApp"), systemImage: "app.badge.checkmark")
                 }
 
             DictionaryTab(settings: settings)
                 .tabItem {
-                    Label("Dictionary", systemImage: "book")
+                    Label(L("tab.dictionary"), systemImage: "book")
                 }
 
             StatisticsTab(settings: settings)
                 .tabItem {
-                    Label("Statistics", systemImage: "chart.bar")
+                    Label(L("tab.statistics"), systemImage: "chart.bar")
                 }
 
             AboutTab()
                 .tabItem {
-                    Label("About", systemImage: "info.circle")
+                    Label(L("tab.about"), systemImage: "info.circle")
                 }
         }
-        .frame(width: 520, height: 420)
-        .padding()
+        // A minimum rather than a fixed size: a longer translation makes the tab bar grow
+        // instead of truncating its titles.
+        .frame(
+            minWidth: Self.contentSize.width,
+            idealWidth: Self.contentSize.width,
+            minHeight: Self.contentSize.height,
+            idealHeight: Self.contentSize.height
+        )
+        .padding(Self.windowPadding)
     }
 }
 
@@ -45,47 +81,65 @@ struct SettingsView: View {
 
 struct GeneralTab: View {
     @ObservedObject var settings: SettingsModel
+    @ObservedObject private var l10n = Localization.shared
 
     var body: some View {
         Form {
             Section {
-                Toggle("Enable automatic layout switching", isOn: $settings.isEnabled)
+                Toggle(L("general.enable"), isOn: $settings.isEnabled)
 
-                Toggle("Start at login", isOn: $settings.autoStartOnLogin)
+                Toggle(L("general.startAtLogin"), isOn: $settings.autoStartOnLogin)
 
-                Toggle("Show notification on switch", isOn: $settings.showNotifications)
+                Toggle(L("general.showNotifications"), isOn: $settings.showNotifications)
+
+                // In the General section rather than one of its own: a section header plus
+                // its spacing costs ~90pt, which pushed the rest of this tab below the fold
+                // for the sake of a single picker.
+                Picker(L("general.language"), selection: $l10n.language) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(language.displayName).tag(language)
+                    }
+                }
+
+                Text(L("general.languageHint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } header: {
-                Text("General")
+                Text(L("general.section"))
             }
 
             Section {
                 HotkeyRecorderRow(settings: settings)
-                Text("Press a key combination with at least one modifier (\u{2303} \u{2325} \u{21E7} \u{2318}).")
+                Text(L("hotkey.hint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
-                Text("Undo Hotkey")
+                Text(L("hotkey.section"))
             }
 
             Section {
                 HStack {
-                    Text("Current layout:")
+                    Text(L("status.currentLayout"))
                     Spacer()
-                    Text(InputSourceManager.currentLanguage()?.rawValue.capitalized ?? "Other")
+                    Text(Self.currentLayoutName)
                         .foregroundColor(.secondary)
                 }
 
                 HStack {
-                    Text("Supported pair:")
+                    Text(L("status.supportedPair"))
                     Spacer()
-                    Text("Ukrainian \u{2194} English")
+                    Text(L("status.pair"))
                         .foregroundColor(.secondary)
                 }
             } header: {
-                Text("Status")
+                Text(L("status.section"))
             }
         }
         .formStyle(.grouped)
+    }
+
+    private static var currentLayoutName: String {
+        InputSourceManager.currentLanguage()?.localizedName ?? L("language.other")
     }
 }
 
@@ -96,17 +150,17 @@ struct GeneralTab: View {
 /// and stores its keyCode + modifier flags. Esc cancels, Delete disables.
 struct HotkeyRecorderRow: View {
     @ObservedObject var settings: SettingsModel
+    @ObservedObject private var l10n = Localization.shared
     @State private var isRecording = false
     @State private var monitor: Any?
 
     var body: some View {
         HStack {
-            Text("Undo last correction:")
+            Text(L("hotkey.label"))
             Spacer()
 
             Button(action: toggleRecording) {
-                Text(isRecording ? "Press keys\u{2026} (Esc to cancel, \u{232B} to disable)"
-                                 : settings.undoHotkeyDescription)
+                Text(isRecording ? L("hotkey.recording") : settings.undoHotkey.description)
                     .monospacedDigit()
                     .frame(minWidth: 140)
                     .padding(.horizontal, 8)
@@ -119,14 +173,14 @@ struct HotkeyRecorderRow: View {
             .buttonStyle(.plain)
 
             Button {
-                settings.undoHotkeyKeyCode = 0
+                settings.undoHotkey = .disabled
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Disable hotkey")
-            .disabled(!settings.undoHotkeyIsEnabled)
+            .help(L("hotkey.disable"))
+            .disabled(!settings.undoHotkey.isEnabled)
         }
         .onDisappear { stopRecording() }
     }
@@ -160,7 +214,7 @@ struct HotkeyRecorderRow: View {
         }
         // Delete/Backspace disables
         if kc == 0x33 {
-            settings.undoHotkeyKeyCode = 0
+            settings.undoHotkey = .disabled
             stopRecording()
             return
         }
@@ -169,8 +223,9 @@ struct HotkeyRecorderRow: View {
         // Require at least one non-shift modifier — bare 'Z' or '⇧Z' would eat typing.
         let nonShift: NSEvent.ModifierFlags = [.control, .option, .command]
         guard !meaningful.isDisjoint(with: nonShift) else { return }
-        settings.undoHotkeyKeyCode = Int(kc)
-        settings.undoHotkeyModifiers = meaningful.rawValue
+        // Keycode and modifiers are assigned together: two separate assignments published
+        // twice, and the first publish carried the new key with the old modifiers.
+        settings.undoHotkey = HotkeyBinding(keyCode: Int(kc), modifiers: meaningful.rawValue)
         stopRecording()
     }
 }
@@ -179,32 +234,33 @@ struct HotkeyRecorderRow: View {
 
 struct DetectionTab: View {
     @ObservedObject var settings: SettingsModel
+    @ObservedObject private var l10n = Localization.shared
 
     var body: some View {
         Form {
             Section {
-                Picker("Sensitivity", selection: $settings.sensitivity) {
+                Picker(L("detection.sensitivity"), selection: $settings.sensitivity) {
                     ForEach(SettingsModel.Sensitivity.allCases) { level in
                         Text(level.label).tag(level)
                     }
                 }
                 .pickerStyle(.segmented)
 
-                Text("Higher sensitivity = more aggressive switching. Lower = fewer false positives.")
+                Text(L("detection.sensitivityHint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
-                Text("Detection Sensitivity")
+                Text(L("detection.section"))
             }
 
             Section {
                 HStack {
-                    Text("Correction delay:")
+                    Text(L("detection.delay"))
                     Spacer()
-                    Text("\(settings.correctionDelayMs) ms")
+                    Text(L("detection.delayValue", settings.correctionDelayMs))
                         .monospacedDigit()
                         .foregroundColor(.secondary)
-                        .frame(width: 60, alignment: .trailing)
+                        .frame(width: 70, alignment: .trailing)
                 }
 
                 Slider(
@@ -216,23 +272,23 @@ struct DetectionTab: View {
                     step: 10
                 )
 
-                Text("Delay between deleting wrong text and retyping. Increase if corrections appear garbled.")
+                Text(L("detection.delayHint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
-                Text("Correction Timing")
+                Text(L("detection.timingSection"))
             }
 
             Section {
-                Stepper("Minimum word length: \(settings.minWordLength)",
+                Stepper(L("detection.minLength", settings.minWordLength),
                         value: $settings.minWordLength,
                         in: 2...5)
 
-                Text("Words shorter than this won't trigger auto-switching.")
+                Text(L("detection.minLengthHint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
             } header: {
-                Text("Word Length")
+                Text(L("detection.lengthSection"))
             }
         }
         .formStyle(.grouped)
@@ -244,21 +300,28 @@ struct DetectionTab: View {
 struct PerAppTab: View {
     @ObservedObject var settings: SettingsModel
     @State private var showingAppPicker = false
+    /// Refreshed when the tab appears and whenever an app launches or quits, so the popup
+    /// never offers something that is no longer running.
+    @State private var runningApps: [RunningApp] = []
+
+    /// One entry in the "Add Running App" popup.
+    struct RunningApp: Identifiable {
+        let bundleID: String
+        let name: String
+        let icon: NSImage?
+        var id: String { bundleID }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Excluded apps won't trigger automatic layout switching.")
+            Text(L("perApp.hint"))
                 .font(.caption)
                 .foregroundColor(.secondary)
 
             List {
-                ForEach(Array(settings.appRules.enumerated()), id: \.element.id) { index, rule in
+                ForEach(settings.appRules) { rule in
                     HStack {
-                        if let icon = NSWorkspace.shared.icon(forFile:
-                            NSWorkspace.shared.urlForApplication(
-                                withBundleIdentifier: rule.bundleID
-                            )?.path ?? ""
-                        ) as NSImage? {
+                        if let icon = Self.icon(forBundleID: rule.bundleID) {
                             Image(nsImage: icon)
                                 .resizable()
                                 .frame(width: 20, height: 20)
@@ -270,14 +333,26 @@ struct PerAppTab: View {
 
                         Toggle("", isOn: Binding(
                             get: { rule.isExcluded },
-                            set: { newValue in
-                                settings.appRules[index].isExcluded = newValue
-                            }
+                            // Located by bundle ID rather than by a captured row index: an
+                            // index goes stale the moment another row is removed, and the
+                            // toggle would then flip a different app's rule.
+                            set: { newValue in setExcluded(newValue, for: rule.bundleID) }
                         ))
                         .toggleStyle(.switch)
                         .labelsHidden()
+
+                        Button {
+                            remove(bundleID: rule.bundleID)
+                        } label: {
+                            Image(systemName: "minus.circle.fill")
+                                .foregroundColor(.red)
+                        }
+                        .buttonStyle(.plain)
+                        .help(L("perApp.removeHelp", rule.name))
                     }
                 }
+                // Kept alongside the per-row button: this is what wires up the Delete key
+                // and the Edit-mode affordance.
                 .onDelete { indexSet in
                     settings.appRules.remove(atOffsets: indexSet)
                 }
@@ -285,23 +360,55 @@ struct PerAppTab: View {
             .listStyle(.bordered)
 
             HStack {
-                Button("Add Running App...") {
-                    addRunningApps()
+                // A popup rather than a button: the old "Add Running App..." added every
+                // running app at once, so excluding one meant adding a dozen and deleting
+                // the rest.
+                Menu {
+                    ForEach(addableRunningApps) { app in
+                        Button {
+                            add(app)
+                        } label: {
+                            if let icon = app.icon {
+                                Image(nsImage: icon)
+                                Text(app.name)
+                            } else {
+                                Text(app.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Text(L("perApp.addRunning"))
                 }
+                // Default (pull-down) style on purpose, so it sits next to the bordered
+                // "Add App from Finder..." button as a matching control.
+                .fixedSize()
+                .disabled(addableRunningApps.isEmpty)
+                .help(L(addableRunningApps.isEmpty
+                        ? "perApp.addRunningEmpty"
+                        : "perApp.addRunningHelp"))
 
-                Button("Add App from Finder...") {
+                Button(L("perApp.addFromFinder")) {
                     showingAppPicker = true
                 }
 
                 Spacer()
 
-                Button("Remove All") {
+                Button(L("perApp.removeAll")) {
                     settings.appRules.removeAll()
                 }
                 .disabled(settings.appRules.isEmpty)
             }
         }
         .padding()
+        .onAppear { refreshRunningApps() }
+        .onReceive(NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
+                refreshRunningApps()
+            }
+        .onReceive(NSWorkspace.shared.notificationCenter
+            .publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in
+                refreshRunningApps()
+            }
         .fileImporter(
             isPresented: $showingAppPicker,
             allowedContentTypes: [.application],
@@ -313,19 +420,86 @@ struct PerAppTab: View {
         }
     }
 
-    private func addRunningApps() {
-        let runningApps = NSWorkspace.shared.runningApplications
-            .filter { $0.activationPolicy == .regular }
-            .compactMap { app -> SettingsModel.AppRule? in
-                guard let bundleID = app.bundleIdentifier,
-                      let name = app.localizedName else { return nil }
-                // Skip if already in list
-                if settings.appRules.contains(where: { $0.bundleID == bundleID }) {
-                    return nil
+    /// Running apps not already in the rules list.
+    private var addableRunningApps: [RunningApp] {
+        Self.addable(from: runningApps, existing: settings.appRules)
+    }
+
+    /// Only `.regular` apps — the ones with a Dock icon and windows you actually type in.
+    /// Background agents and other menu-bar apps (this one included) are left out; "Add App
+    /// from Finder..." is the escape hatch for anything unusual.
+    private func refreshRunningApps() {
+        runningApps = Self.normalize(
+            NSWorkspace.shared.runningApplications
+                .filter { $0.activationPolicy == .regular }
+                .compactMap { app in
+                    guard let bundleID = app.bundleIdentifier,
+                          let name = app.localizedName else { return nil }
+                    return RunningApp(bundleID: bundleID, name: name, icon: menuIcon(app.icon))
                 }
-                return SettingsModel.AppRule(bundleID: bundleID, name: name, isExcluded: true)
-            }
-        settings.appRules.append(contentsOf: runningApps)
+        )
+    }
+
+    /// Deduplicate by bundle ID and sort by display name.
+    ///
+    /// The dedup is load-bearing, not tidiness: one bundle ID can be running in several
+    /// instances, and a repeated `Identifiable` id makes `ForEach` misbehave.
+    static func normalize(_ apps: [RunningApp]) -> [RunningApp] {
+        var seen = Set<String>()
+        return apps
+            .filter { seen.insert($0.bundleID).inserted }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    /// The entries worth offering: everything running that is not already listed.
+    static func addable(
+        from running: [RunningApp],
+        existing: [SettingsModel.AppRule]
+    ) -> [RunningApp] {
+        let known = Set(existing.map(\.bundleID))
+        return running.filter { !known.contains($0.bundleID) }
+    }
+
+    /// A menu-sized copy of an app icon.
+    ///
+    /// Copied rather than resized in place: `NSRunningApplication.icon` hands back an image
+    /// other parts of AppKit are also holding, and shrinking it would shrink it for them
+    /// too. Menu items want ~16pt; the full-size 512pt icon renders as a giant thumbnail.
+    private func menuIcon(_ image: NSImage?) -> NSImage? {
+        guard let copy = image?.copy() as? NSImage else { return nil }
+        copy.size = NSSize(width: 16, height: 16)
+        return copy
+    }
+
+    private func add(_ app: RunningApp) {
+        guard !settings.appRules.contains(where: { $0.bundleID == app.bundleID }) else { return }
+        settings.appRules.append(
+            SettingsModel.AppRule(bundleID: app.bundleID, name: app.name, isExcluded: true)
+        )
+    }
+
+    /// Drop a single app from the list. Once removed it reappears in the "Add Running App"
+    /// popup, if it is still running.
+    private func remove(bundleID: String) {
+        settings.appRules.removeAll { $0.bundleID == bundleID }
+    }
+
+    private func setExcluded(_ excluded: Bool, for bundleID: String) {
+        guard let index = settings.appRules.firstIndex(where: { $0.bundleID == bundleID }) else {
+            return
+        }
+        settings.appRules[index].isExcluded = excluded
+    }
+
+    /// The Finder icon for an installed app, or nil when it cannot be located.
+    ///
+    /// `icon(forFile:)` never returns nil — handed an empty path it produces a generic
+    /// document icon — so the lookup has to fail on the *path*, not on the icon.
+    private static func icon(forBundleID bundleID: String) -> NSImage? {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            return nil
+        }
+        return NSWorkspace.shared.icon(forFile: url.path)
     }
 
     private func addAppFromURL(_ url: URL) {
@@ -348,16 +522,23 @@ struct DictionaryTab: View {
     @ObservedObject var settings: SettingsModel
     @State private var newEnglishWord = ""
     @State private var newUkrainianWord = ""
-    @State private var showingEnglishFilePicker = false
-    @State private var showingUkrainianFilePicker = false
     @State private var importStatusMessage = ""
+
+    /// One importer, told which side asked for it.
+    ///
+    /// There used to be two `.fileImporter` modifiers on this same view, one per language.
+    /// SwiftUI keeps only one presentation of a given kind per view, so the second silently
+    /// replaced the first and the English "Import Dictionary File..." button did nothing at
+    /// all — the Ukrainian one worked purely because it happened to be declared last.
+    @State private var showingFilePicker = false
+    @State private var importLanguage: Language = .english
 
     var body: some View {
         VStack(spacing: 12) {
             HStack(spacing: 16) {
                 // English column
                 VStack(alignment: .leading) {
-                    Text("English Words")
+                    Text(L("dictionary.english"))
                         .font(.headline)
 
                     List {
@@ -371,7 +552,7 @@ struct DictionaryTab: View {
                     .listStyle(.bordered)
 
                     HStack {
-                        TextField("New word...", text: $newEnglishWord)
+                        TextField(L("dictionary.newWord"), text: $newEnglishWord)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { addEnglishWord() }
 
@@ -379,15 +560,15 @@ struct DictionaryTab: View {
                             .disabled(newEnglishWord.isEmpty)
                     }
 
-                    Button("Import Dictionary File...") {
-                        showingEnglishFilePicker = true
+                    Button(L("dictionary.import")) {
+                        beginImport(for: .english)
                     }
                     .font(.caption)
                 }
 
                 // Ukrainian column
                 VStack(alignment: .leading) {
-                    Text("Ukrainian Words")
+                    Text(L("dictionary.ukrainian"))
                         .font(.headline)
 
                     List {
@@ -401,7 +582,7 @@ struct DictionaryTab: View {
                     .listStyle(.bordered)
 
                     HStack {
-                        TextField("Нове слово...", text: $newUkrainianWord)
+                        TextField(L("dictionary.newWord"), text: $newUkrainianWord)
                             .textFieldStyle(.roundedBorder)
                             .onSubmit { addUkrainianWord() }
 
@@ -409,8 +590,8 @@ struct DictionaryTab: View {
                             .disabled(newUkrainianWord.isEmpty)
                     }
 
-                    Button("Import Dictionary File...") {
-                        showingUkrainianFilePicker = true
+                    Button(L("dictionary.import")) {
+                        beginImport(for: .ukrainian)
                     }
                     .font(.caption)
                 }
@@ -420,7 +601,7 @@ struct DictionaryTab: View {
             if !settings.customEnglishDictionaryPaths.isEmpty || !settings.customUkrainianDictionaryPaths.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Imported Dictionary Files")
+                    Text(L("dictionary.importedFiles"))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
@@ -465,23 +646,22 @@ struct DictionaryTab: View {
         }
         .padding()
         .fileImporter(
-            isPresented: $showingEnglishFilePicker,
+            isPresented: $showingFilePicker,
             allowedContentTypes: [.plainText],
             allowsMultipleSelection: false
         ) { result in
+            // `importLanguage` is still the value set by whichever button opened the panel:
+            // the completion runs before SwiftUI clears `showingFilePicker`, and nothing
+            // else writes it.
             if case .success(let urls) = result, let url = urls.first {
-                importDictionaryFile(url: url, language: .english)
+                importDictionaryFile(url: url, language: importLanguage)
             }
         }
-        .fileImporter(
-            isPresented: $showingUkrainianFilePicker,
-            allowedContentTypes: [.plainText],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                importDictionaryFile(url: url, language: .ukrainian)
-            }
-        }
+    }
+
+    private func beginImport(for language: Language) {
+        importLanguage = language
+        showingFilePicker = true
     }
 
     private func importDictionaryFile(url: URL, language: Language) {
@@ -502,7 +682,7 @@ struct DictionaryTab: View {
             }
         }
 
-        importStatusMessage = "Imported \(count) \(language.rawValue) words from \(url.lastPathComponent)"
+        importStatusMessage = L("dictionary.importedCount", count, url.lastPathComponent)
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             importStatusMessage = ""
         }
@@ -534,7 +714,7 @@ struct StatisticsTab: View {
             Form {
                 Section {
                     HStack {
-                        Text("Total corrections (all time):")
+                        Text(L("stats.total"))
                         Spacer()
                         Text("\(settings.totalCorrections)")
                             .monospacedDigit()
@@ -542,19 +722,19 @@ struct StatisticsTab: View {
                     }
 
                     HStack {
-                        Text("Corrections this session:")
+                        Text(L("stats.session"))
                         Spacer()
                         Text("\(settings.sessionCorrections)")
                             .monospacedDigit()
                             .foregroundColor(.secondary)
                     }
 
-                    Button("Reset Statistics") {
+                    Button(L("stats.reset")) {
                         settings.resetStatistics()
                     }
                     .foregroundColor(.red)
                 } header: {
-                    Text("Correction Statistics")
+                    Text(L("stats.section"))
                 }
             }
             .formStyle(.grouped)
@@ -563,7 +743,7 @@ struct StatisticsTab: View {
             // Exceptions Editor — lives outside the Form so List(selection:) renders
             // as a proper interactive table with per-row controls.
             VStack(alignment: .leading, spacing: 6) {
-                Text("Self-Learned Exceptions (\(settings.exceptionWords.count))")
+                Text(L("stats.exceptions", settings.exceptionWords.count))
                     .font(.headline)
                 ExceptionsEditor(settings: settings)
             }
@@ -585,48 +765,34 @@ struct ExceptionsEditor: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if settings.exceptionWords.isEmpty {
-                Text("No learned exceptions yet. Backspace after a wrong correction to teach the app, or add one below.")
+                Text(L("exceptions.empty"))
                     .foregroundColor(.secondary)
                     .font(.caption)
             } else {
                 // Multi-select List. Each row has an inline TextField + delete button.
                 List(selection: $selection) {
-                    ForEach(Array(settings.exceptionWords.enumerated()), id: \.element) { index, word in
-                        HStack {
-                            TextField(
-                                "",
-                                text: Binding(
-                                    get: { settings.exceptionWords[safe: index] ?? word },
-                                    set: { newValue in updateWord(at: index, to: newValue) }
-                                )
-                            )
-                            .textFieldStyle(.roundedBorder)
-
-                            Button {
-                                deleteWord(word)
-                            } label: {
-                                Image(systemName: "minus.circle.fill")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Delete this word")
-                        }
+                    ForEach(settings.exceptionWords, id: \.self) { word in
+                        ExceptionRow(
+                            word: word,
+                            onCommit: { newValue in commit(newValue, replacing: word) },
+                            onDelete: { deleteWord(word) }
+                        )
                         .tag(word)
                     }
                 }
                 .frame(minHeight: 140, maxHeight: 200)
 
                 HStack {
-                    Button("Delete Selected") { deleteSelected() }
+                    Button(L("exceptions.deleteSelected")) { deleteSelected() }
                         .disabled(selection.isEmpty)
 
-                    Text("\(selection.count) selected")
+                    Text(L("exceptions.selectedCount", selection.count))
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     Spacer()
 
-                    Button("Clear All") {
+                    Button(L("exceptions.clearAll")) {
                         settings.exceptionWords.removeAll()
                         selection.removeAll()
                     }
@@ -637,27 +803,30 @@ struct ExceptionsEditor: View {
             Divider()
 
             HStack {
-                TextField("Add exception word\u{2026}", text: $newWord)
+                TextField(L("exceptions.addPlaceholder"), text: $newWord)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { addWord() }
-                Button("Add") { addWord() }
+                Button(L("exceptions.add")) { addWord() }
                     .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
     }
 
-    private func updateWord(at index: Int, to newValue: String) {
+    /// Write an edited word back to the list. Called once the user is done with the field,
+    /// never while they are still typing in it.
+    private func commit(_ newValue: String, replacing old: String) {
         let normalized = newValue.trimmingCharacters(in: .whitespaces).lowercased()
-        guard index < settings.exceptionWords.count else { return }
-        let old = settings.exceptionWords[index]
+        guard normalized != old else { return }
+        guard let index = settings.exceptionWords.firstIndex(of: old) else { return }
+
+        // Empty text removes the word.
         if normalized.isEmpty {
-            // Empty text removes the word
             settings.exceptionWords.remove(at: index)
             selection.remove(old)
             return
         }
-        // Deduplicate: if editing to a value already present elsewhere, drop this row.
-        if let existingIdx = settings.exceptionWords.firstIndex(of: normalized), existingIdx != index {
+        // Deduplicate: if edited to a value already present elsewhere, drop this row.
+        if settings.exceptionWords.contains(normalized) {
             settings.exceptionWords.remove(at: index)
             selection.remove(old)
             return
@@ -689,9 +858,62 @@ struct ExceptionsEditor: View {
     }
 }
 
-private extension Array {
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
+/// One editable exception word.
+///
+/// The text being typed lives here, in local state, and only reaches the model when the
+/// field is done with. Editing used to write straight through on every keystroke, which
+/// trimmed and lowercased the text as it was typed — so a capital or a space could not be
+/// entered at all — and changed the row's identity with each character, tearing the
+/// `TextField` down and taking the keyboard focus with it. It also wrote the whole list to
+/// `UserDefaults` and rebuilt the lookup set per keystroke.
+private struct ExceptionRow: View {
+    let word: String
+    let onCommit: (String) -> Void
+    let onDelete: () -> Void
+
+    @State private var text: String = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        HStack {
+            TextField("", text: $text)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onSubmit { onCommit(text) }
+
+            Button {
+                onDelete()
+            } label: {
+                Image(systemName: "minus.circle.fill")
+                    .foregroundColor(.red)
+            }
+            .buttonStyle(.plain)
+            .help(L("exceptions.deleteHelp"))
+        }
+        // The row's identity is the word itself, so onAppear runs again whenever the model
+        // value changes underneath.
+        .onAppear { text = word }
+        .onDisappear { onCommit(text) }
+        .modifier(CommitOnFocusLoss(isFocused: isFocused) { onCommit(text) })
+    }
+}
+
+/// Commits when focus leaves the field. Split out only to keep the availability dance for
+/// `onChange` out of the row's body.
+private struct CommitOnFocusLoss: ViewModifier {
+    let isFocused: Bool
+    let commit: () -> Void
+
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) {
+            content.onChange(of: isFocused) { wasFocused, nowFocused in
+                if wasFocused && !nowFocused { commit() }
+            }
+        } else {
+            content.onChange(of: isFocused) { nowFocused in
+                if !nowFocused { commit() }
+            }
+        }
     }
 }
 
@@ -823,47 +1045,44 @@ struct CombinedFlagIcon: View {
 }
 
 struct AboutTab: View {
+    @ObservedObject private var l10n = Localization.shared
+
+    /// Read from the bundle rather than typed in, so it cannot disagree with the version
+    /// the installer stamps into Info.plist.
+    private var version: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             // Combined UK + Ukraine flag icon
             CombinedFlagIcon(size: 90)
                 .padding(.top, 8)
 
+            // Not localized: the product name is the same in every language.
             Text("MacKeySwitch")
                 .font(.system(size: 22, weight: .bold))
 
-            Text("Automatic Mac Keyboard Switcher")
+            Text(L("about.tagline"))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
 
-            Text("Version 2.0")
+            Text(L("about.version", version))
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
 
             Divider().frame(width: 250)
 
-            // Bilingual description
-            VStack(spacing: 3) {
-                Text("Automatic keyboard layout switcher for Ukrainian and English.")
+            // One description, in the chosen interface language. This used to print the
+            // English and Ukrainian blocks one after the other, which was the only way to
+            // reach both audiences before there was a language setting.
+            VStack(spacing: 4) {
+                Text(L("about.description"))
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
 
-                Text("Automatically detects the wrong layout and corrects text in real time.")
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-            }
-
-            Divider().frame(width: 250)
-
-            VStack(spacing: 3) {
-                Text("\u{0410}\u{0432}\u{0442}\u{043E}\u{043C}\u{0430}\u{0442}\u{0438}\u{0447}\u{043D}\u{0435} \u{043F}\u{0435}\u{0440}\u{0435}\u{043C}\u{0438}\u{043A}\u{0430}\u{043D}\u{043D}\u{044F} \u{0440}\u{043E}\u{0437}\u{043A}\u{043B}\u{0430}\u{0434}\u{043A}\u{0438} \u{043A}\u{043B}\u{0430}\u{0432}\u{0456}\u{0430}\u{0442}\u{0443}\u{0440}\u{0438} \u{043C}\u{0456}\u{0436} \u{0443}\u{043A}\u{0440}\u{0430}\u{0457}\u{043D}\u{0441}\u{044C}\u{043A}\u{043E}\u{044E} \u{0442}\u{0430} \u{0430}\u{043D}\u{0433}\u{043B}\u{0456}\u{0439}\u{0441}\u{044C}\u{043A}\u{043E}\u{044E} \u{043C}\u{043E}\u{0432}\u{0430}\u{043C}\u{0438}.")
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-
-                Text("\u{0410}\u{0432}\u{0442}\u{043E}\u{043C}\u{0430}\u{0442}\u{0438}\u{0447}\u{043D}\u{043E} \u{0432}\u{0438}\u{0437}\u{043D}\u{0430}\u{0447}\u{0430}\u{0454} \u{043D}\u{0435}\u{043F}\u{0440}\u{0430}\u{0432}\u{0438}\u{043B}\u{044C}\u{043D}\u{0443} \u{0440}\u{043E}\u{0437}\u{043A}\u{043B}\u{0430}\u{0434}\u{043A}\u{0443} \u{0442}\u{0430} \u{0432}\u{0438}\u{043F}\u{0440}\u{0430}\u{0432}\u{043B}\u{044F}\u{0454} \u{0442}\u{0435}\u{043A}\u{0441}\u{0442} \u{0443} \u{0440}\u{0435}\u{0430}\u{043B}\u{044C}\u{043D}\u{043E}\u{043C}\u{0443} \u{0447}\u{0430}\u{0441}\u{0456}.")
+                Text(L("about.detail"))
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -872,10 +1091,10 @@ struct AboutTab: View {
             Spacer()
 
             VStack(spacing: 3) {
-                Text("Created by Oleksandr Kuzmin, 2026")
+                Text(L("about.author"))
                     .font(.system(size: 11, weight: .medium))
 
-                Text("Licensed under GNU General Public License v3.0 (GPL-3.0)")
+                Text(L("about.licence"))
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
             }

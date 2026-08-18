@@ -1,0 +1,108 @@
+/* MacKeySwitch — українські рядки інтерфейсу.
+   Набір ключів має збігатися з en.lproj/Localizable.strings; LocalizationTests
+   не пропустить розбіжність. */
+
+/* Рядок меню */
+"menu.enabled" = "Увімкнено";
+"menu.undo" = "Скасувати останню заміну";
+"menu.currentLayout" = "Поточна: %@";
+"menu.corrections" = "Виправлень: %d";
+"menu.correctionsWithTotal" = "Виправлень: %1$d (усього: %2$d)";
+"menu.settings" = "Налаштування…";
+"window.settings" = "Налаштування MacKeySwitch";
+"menu.quit" = "Вийти з MacKeySwitch";
+
+/* Мови */
+"language.english" = "Англійська";
+"language.ukrainian" = "Українська";
+"language.other" = "Інша";
+"language.system" = "Системна";
+
+/* Вкладки */
+"tab.general" = "Загальні";
+"tab.detection" = "Розпізнавання";
+"tab.perApp" = "Програми";
+"tab.dictionary" = "Словник";
+"tab.statistics" = "Статистика";
+"tab.about" = "Про програму";
+
+/* Вкладка «Загальні» */
+"general.section" = "Загальні";
+"general.enable" = "Автоматично перемикати розкладку";
+"general.startAtLogin" = "Запускати при вході в систему";
+"general.showNotifications" = "Показувати сповіщення про заміну";
+"general.language" = "Мова інтерфейсу";
+"general.languageHint" = "Застосовується одразу. «Системна» — за порядком мов у Системних налаштуваннях.";
+
+/* Гаряча клавіша скасування */
+"hotkey.section" = "Гаряча клавіша скасування";
+"hotkey.label" = "Скасувати виправлення:";
+"hotkey.recording" = "Натисніть клавіші… (Esc — скасувати, ⌫ — вимкнути)";
+"hotkey.hint" = "Натисніть комбінацію щонайменше з одним модифікатором (⌃ ⌥ ⇧ ⌘).";
+"hotkey.disable" = "Вимкнути гарячу клавішу";
+"hotkey.disabled" = "Вимкнено";
+
+/* Стан */
+"status.section" = "Стан";
+"status.currentLayout" = "Поточна розкладка:";
+"status.supportedPair" = "Підтримувана пара:";
+"status.pair" = "Українська ↔ англійська";
+
+/* Вкладка «Розпізнавання» */
+"detection.section" = "Чутливість розпізнавання";
+"detection.sensitivity" = "Чутливість";
+"detection.sensitivityHint" = "Вища чутливість — активніше перемикання. Нижча — менше хибних спрацювань.";
+"detection.timingSection" = "Час виправлення";
+"detection.delay" = "Затримка виправлення:";
+"detection.delayValue" = "%d мс";
+"detection.delayHint" = "Пауза між стиранням хибного тексту й повторним набором. Збільште, якщо виправлення виходять спотвореними.";
+"detection.lengthSection" = "Довжина слова";
+"detection.minLength" = "Мінімальна довжина слова: %d";
+"detection.minLengthHint" = "Коротші слова не викликатимуть автоперемикання.";
+
+/* Рівні чутливості */
+"sensitivity.low" = "Низька";
+"sensitivity.medium" = "Середня";
+"sensitivity.high" = "Висока";
+"sensitivity.veryHigh" = "Дуже висока";
+
+/* Вкладка «Правила програм» */
+"perApp.hint" = "У виключених програмах розкладка не перемикається автоматично.";
+"perApp.addRunning" = "Додати запущену";
+"perApp.addRunningHelp" = "Оберіть запущену програму, щоб додати до списку";
+"perApp.addRunningEmpty" = "Усі запущені програми вже у списку";
+"perApp.addFromFinder" = "Додати з Finder…";
+"perApp.removeAll" = "Видалити всі";
+"perApp.removeHelp" = "Видалити «%@» зі списку";
+
+/* Вкладка «Словник» */
+"dictionary.english" = "Англійські слова";
+"dictionary.ukrainian" = "Українські слова";
+"dictionary.newWord" = "Нове слово…";
+"dictionary.import" = "Імпортувати файл словника…";
+"dictionary.importedFiles" = "Імпортовані файли словників";
+"dictionary.importedCount" = "Імпортовано %1$d слів із %2$@";
+
+/* Вкладка «Статистика» */
+"stats.section" = "Статистика виправлень";
+"stats.total" = "Усього виправлень:";
+"stats.session" = "Виправлень за сеанс:";
+"stats.reset" = "Скинути статистику";
+"stats.exceptions" = "Самостійно вивчені винятки (%d)";
+
+/* Редактор винятків */
+"exceptions.empty" = "Винятків ще немає. Натисніть Backspace після хибного виправлення, щоб навчити програму, або додайте слово нижче.";
+"exceptions.deleteSelected" = "Видалити вибрані";
+"exceptions.selectedCount" = "вибрано: %d";
+"exceptions.clearAll" = "Очистити все";
+"exceptions.addPlaceholder" = "Додати слово-виняток…";
+"exceptions.add" = "Додати";
+"exceptions.deleteHelp" = "Видалити це слово";
+
+/* Вкладка «Про програму» */
+"about.tagline" = "Автоматичний перемикач розкладки для Mac";
+"about.version" = "Версія %@";
+"about.description" = "Автоматичне перемикання розкладки клавіатури між українською та англійською мовами.";
+"about.detail" = "Автоматично визначає неправильну розкладку та виправляє текст у реальному часі.";
+"about.author" = "Створив Олександр Кузьмін, 2026";
+"about.licence" = "Ліцензія GNU General Public License v3.0 (GPL-3.0)";

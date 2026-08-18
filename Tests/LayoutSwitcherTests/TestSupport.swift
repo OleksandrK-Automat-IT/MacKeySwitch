@@ -43,16 +43,25 @@ struct StubDictionary: WordSource {
     }
 }
 
-/// Keycodes for a string typed on a US QWERTY keyboard, as the monitor would buffer them.
+/// Keystrokes for a string typed on a US QWERTY keyboard, as the monitor would buffer them.
 /// Mirrors how `KeyMapping.reconstruct` reads them back.
-func keycodes(forTyping text: String) -> [(UInt16, Bool)] {
-    var result: [(UInt16, Bool)] = []
+func keycodes(forTyping text: String, capsLock: Bool = false) -> [Keystroke] {
+    var result: [Keystroke] = []
     for char in text {
         if let entry = KeyMapping.unshifted.first(where: { $0.value.en == char }) {
-            result.append((entry.key, false))
+            result.append(Keystroke(keycode: entry.key, shift: false, capsLock: capsLock))
         } else if let entry = KeyMapping.shifted.first(where: { $0.value.en == char }) {
-            result.append((entry.key, true))
+            result.append(Keystroke(keycode: entry.key, shift: true, capsLock: capsLock))
         }
     }
     return result
+}
+
+/// The same, keyed on the Ukrainian side of the map: what the buffer holds when a Ukrainian
+/// word is typed with the US layout still active.
+func keycodes(forTypingUkrainian text: String) -> [Keystroke] {
+    text.compactMap { char in
+        KeyMapping.unshifted.first { $0.value.ua == char }
+            .map { Keystroke(keycode: $0.key) }
+    }
 }

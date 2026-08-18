@@ -12,27 +12,57 @@ final class CarbonHotkey {
     var onFire: (() -> Void)?
 
     private static let signature: OSType = 0x4D4B5357 // 'MKSW'
+
+    /// The registry the C event handler dispatches through.
+    ///
+    /// Deliberately weak: a strong map would keep every instance alive forever, which also
+    /// made `deinit` — and therefore the cleanup below — unreachable. `registryLock` guards
+    /// it because `deinit` can run on any thread even though everything else here is main.
+    private struct WeakHotkey {
+        weak var hotkey: CarbonHotkey?
+    }
+    private static let registryLock = NSLock()
     private static var nextID: UInt32 = 1
-    private static var instances: [UInt32: CarbonHotkey] = [:]
+    private static var instances: [UInt32: WeakHotkey] = [:]
     private static var handlerInstalled = false
 
+    private static func lookup(_ id: UInt32) -> CarbonHotkey? {
+        registryLock.lock(); defer { registryLock.unlock() }
+        return instances[id]?.hotkey
+    }
+
     init() {
+        CarbonHotkey.registryLock.lock()
         self.id = CarbonHotkey.nextID
         CarbonHotkey.nextID += 1
+        CarbonHotkey.registryLock.unlock()
+
         CarbonHotkey.installHandlerIfNeeded()
-        CarbonHotkey.instances[id] = self
+
+        CarbonHotkey.registryLock.lock()
+        CarbonHotkey.instances[id] = WeakHotkey(hotkey: self)
+        CarbonHotkey.registryLock.unlock()
     }
 
     deinit {
-        unregister()
+        // Not `unregister()` — that is main-thread-only bookkeeping and deinit is not
+        // guaranteed to run there. Releasing the Carbon ref directly is enough.
+        if let ref = ref {
+            UnregisterEventHotKey(ref)
+        }
+        CarbonHotkey.registryLock.lock()
         CarbonHotkey.instances.removeValue(forKey: id)
+        CarbonHotkey.registryLock.unlock()
     }
 
     /// Install a single app-wide Carbon event handler that dispatches to the
     /// matching `CarbonHotkey` instance by hotkey id.
     private static func installHandlerIfNeeded() {
-        guard !handlerInstalled else { return }
+        registryLock.lock()
+        let alreadyInstalled = handlerInstalled
         handlerInstalled = true
+        registryLock.unlock()
+        guard !alreadyInstalled else { return }
         var eventType = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
@@ -51,7 +81,7 @@ final class CarbonHotkey {
                     nil,
                     &hkID
                 )
-                if status == noErr, let hk = CarbonHotkey.instances[hkID.id] {
+                if status == noErr, let hk = CarbonHotkey.lookup(hkID.id) {
                     DispatchQueue.main.async { hk.onFire?() }
                 }
                 return noErr

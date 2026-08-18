@@ -88,7 +88,7 @@ struct LanguageDetector {
     /// Analyse a completed word. Returns the language it should be retyped in, or nil to
     /// leave it alone.
     static func detectIntended(
-        keycodes: [(UInt16, Bool)],
+        keycodes: [Keystroke],
         currentLayout: Language,
         threshold: Int,
         settings: SettingsModel?,

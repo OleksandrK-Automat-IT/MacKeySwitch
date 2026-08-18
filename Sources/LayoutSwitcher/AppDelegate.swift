@@ -11,6 +11,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private let settings = SettingsModel.shared
     private var accessibilityTimer: Timer?
+    /// Held so the checkmark can follow `settings.isEnabled` however it was changed.
+    private weak var enableMenuItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Set runtime app icon (Dock/About/Alerts) to match the About-tab logo.
@@ -18,11 +20,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusBar()
         monitor.settings = settings
-        monitor.onUndoRequest = { [weak self] in self?.handleUndoHotkey() }
         setupGlobalUndoHotkey()
+        observeEnabledSetting()
+        observeInterfaceLanguage()
         requestNotificationAuthorization()
+        // Observers before the monitor: the monitor seeds its caches at start, and a layout
+        // or app switch in between would otherwise go unseen.
+        startSystemObservers()
         tryStartMonitor()
-        startLayoutObserver()
+    }
+
+    /// macOS 14 logs a warning for delegates that do not answer this; secure coding is the
+    /// only sensible answer for an app with no restorable UI state.
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return true
     }
 
     /// Request notification permissions on launch. If the process's bundle is not registered
@@ -34,19 +45,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // bundles these APIs can throw `NSInternalInconsistencyException` (not a Swift error),
         // which would otherwise terminate the process.
         let ok = ObjCExceptionGuard.tryBlock {
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
-                if let error = error {
-                    print("[MacKeySwitch] Notification auth error: \(error.localizedDescription)")
-                    KeyboardMonitor.notificationsAvailable = false
-                    return
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { [weak self] granted, error in
+                // The callback arrives on an arbitrary thread; the flag it sets is read
+                // from the main thread on every correction.
+                DispatchQueue.main.async {
+                    if let error = error {
+                        print("[MacKeySwitch] Notification auth error: \(error.localizedDescription)")
+                        self?.monitor.notificationsAvailable = false
+                        return
+                    }
+                    self?.monitor.notificationsAvailable = granted
+                    print("[MacKeySwitch] Notifications authorized: \(granted)")
                 }
-                KeyboardMonitor.notificationsAvailable = granted
-                print("[MacKeySwitch] Notifications authorized: \(granted)")
             }
         }
         if !ok {
             print("[MacKeySwitch] UNUserNotificationCenter unavailable in this bundle — disabling notifications.")
-            KeyboardMonitor.notificationsAvailable = false
+            monitor.notificationsAvailable = false
         }
     }
 
@@ -54,6 +69,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accessibilityTimer?.invalidate()
         undoHotkey.unregister()
         monitor.stop()
+        DistributedNotificationCenter.default().removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     /// Critical for menu-bar apps: don't quit when the Settings window closes.
@@ -64,32 +81,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Global Undo Hotkey (Carbon-based)
 
     private let undoHotkey = CarbonHotkey()
-    private var hotkeyCancellables = Set<AnyCancellable>()
+    private var cancellables = Set<AnyCancellable>()
 
     /// Register the system-wide undo hotkey via Carbon. Re-registers automatically
-    /// when the user changes keyCode/modifiers in Settings.
+    /// when the user records a different shortcut in Settings.
     private func setupGlobalUndoHotkey() {
         undoHotkey.onFire = { [weak self] in self?.handleUndoHotkey() }
-        refreshUndoHotkey()
 
-        // Re-register on change. CombineLatest fires once on subscribe, which is fine
-        // (idempotent — register() unregisters prior ref first).
-        Publishers.CombineLatest(settings.$undoHotkeyKeyCode, settings.$undoHotkeyModifiers)
-            .dropFirst() // skip initial sink on subscribe — we already called refresh above
-            .sink { [weak self] _, _ in self?.refreshUndoHotkey() }
-            .store(in: &hotkeyCancellables)
+        // The binding is taken from the publisher, never read back off `settings`:
+        // `@Published` emits before the stored property is updated, so reading the model
+        // inside this sink would apply the *previous* shortcut. `sink` on subscribe covers
+        // the initial registration, so there is no separate call for it.
+        settings.$undoHotkey
+            .sink { [weak self] binding in self?.applyUndoHotkey(binding) }
+            .store(in: &cancellables)
     }
 
-    private func refreshUndoHotkey() {
-        guard settings.undoHotkeyIsEnabled else {
+    private func applyUndoHotkey(_ binding: HotkeyBinding) {
+        guard binding.isEnabled else {
             undoHotkey.unregister()
             print("[LayoutSwitcher] Undo hotkey disabled.")
             return
         }
-        let flags = NSEvent.ModifierFlags(rawValue: settings.undoHotkeyModifiers)
+        let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
         let carbonMods = CarbonHotkey.carbonModifiers(from: flags)
         _ = undoHotkey.register(
-            keyCode: UInt32(settings.undoHotkeyKeyCode),
+            keyCode: UInt32(binding.keyCode),
             carbonModifiers: carbonMods
         )
     }
@@ -98,9 +115,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.undoLastCorrection()
     }
 
-    // MARK: - Layout Observer
+    // MARK: - Enabled State
 
-    private func startLayoutObserver() {
+    /// Keep the menu bar in step with the toggle in the Settings window. Without this the
+    /// icon kept showing a flag, and the menu kept showing a checkmark, after the user had
+    /// switched the app off anywhere other than the menu itself.
+    private func observeEnabledSetting() {
+        settings.$isEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                guard let self = self else { return }
+                self.monitor.isEnabled = enabled
+                self.enableMenuItem?.state = enabled ? .on : .off
+                self.updateLayoutIcon()
+            }
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Interface Language
+
+    /// SwiftUI redraws itself when the language changes; an `NSMenu` does not. Its titles
+    /// were baked in when it was built, so the menu has to be rebuilt by hand.
+    private func observeInterfaceLanguage() {
+        Localization.shared.$language
+            .dropFirst() // the menu is already built in the current language
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                self.statusItem.menu = self.buildMenu()
+                self.updateLayoutIcon()
+                // The window is created once and kept, so its title was baked in too.
+                self.settingsWindow?.title = L("window.settings")
+            }
+            .store(in: &cancellables)
+    }
+
+    /// The active layout's name, for display.
+    private static var currentLayoutName: String {
+        InputSourceManager.currentLanguage()?.localizedName ?? L("language.other")
+    }
+
+    // MARK: - System Observers
+
+    /// The monitor reads the current layout and the frontmost app on every keystroke, so
+    /// both are cached there and refreshed from here. Querying them per keystroke meant two
+    /// cross-process calls inside an event tap callback, which is how a tap earns
+    /// `tapDisabledByTimeout`.
+    private func startSystemObservers() {
         // One observer drives both effects. Registering the same notification twice ran
         // the whole dispatch twice per switch for no benefit.
         DistributedNotificationCenter.default().addObserver(
@@ -109,14 +170,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(frontmostAppChanged(_:)),
+            name: NSWorkspace.didActivateApplicationNotification,
+            object: nil
+        )
         updateLayoutIcon()
     }
 
     @objc private func inputSourceChanged() {
-        monitor.notifyManualLayoutSwitch()
+        // Distributed notifications are not guaranteed to arrive on the main thread, and
+        // everything downstream — TIS, the status item, the monitor's buffer — is main-only.
         DispatchQueue.main.async { [weak self] in
-            self?.updateLayoutIcon()
+            guard let self = self else { return }
+            self.monitor.layoutDidChange()
+            self.updateLayoutIcon()
         }
+    }
+
+    @objc private func frontmostAppChanged(_ notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        monitor.frontmostAppDidChange(bundleID: app?.bundleIdentifier)
     }
 
     private func updateLayoutIcon() {
@@ -303,23 +378,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupStatusBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.menu = buildMenu()
         updateLayoutIcon()
+    }
 
+    /// Build the menu from scratch, in the current interface language.
+    ///
+    /// Separate from `setupStatusBar` because the language observer needs to replace the
+    /// menu: calling the setup again would ask `NSStatusBar` for a *second* status item and
+    /// leave two icons side by side in the menu bar.
+    private func buildMenu() -> NSMenu {
         let menu = NSMenu()
         menu.delegate = self
 
         let enableItem = NSMenuItem(
-            title: "Enabled",
+            title: L("menu.enabled"),
             action: #selector(toggleEnabled(_:)),
             keyEquivalent: ""
         )
         enableItem.state = settings.isEnabled ? .on : .off
         menu.addItem(enableItem)
+        enableMenuItem = enableItem
 
         menu.addItem(NSMenuItem.separator())
 
         let undoItem = NSMenuItem(
-            title: "Undo Last Switch",
+            title: L("menu.undo"),
             action: #selector(undoSwitch),
             keyEquivalent: ""
         )
@@ -330,7 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         let currentLayout = NSMenuItem(
-            title: "Current: \(InputSourceManager.currentLanguage()?.rawValue ?? "other")",
+            title: L("menu.currentLayout", Self.currentLayoutName),
             action: nil,
             keyEquivalent: ""
         )
@@ -339,7 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(currentLayout)
 
         let statsItem = NSMenuItem(
-            title: "Corrections: \(settings.sessionCorrections)",
+            title: L("menu.corrections", settings.sessionCorrections),
             action: nil,
             keyEquivalent: ""
         )
@@ -350,7 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(NSMenuItem(
-            title: "Settings...",
+            title: L("menu.settings"),
             action: #selector(openSettings),
             keyEquivalent: ","
         ))
@@ -358,19 +442,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(NSMenuItem(
-            title: "Quit MacKeySwitch",
+            title: L("menu.quit"),
             action: #selector(quitApp),
             keyEquivalent: "q"
         ))
 
-        statusItem.menu = menu
+        return menu
     }
 
     @objc private func toggleEnabled(_ sender: NSMenuItem) {
+        // The checkmark, the monitor and the icon all follow from `observeEnabledSetting`,
+        // so this only has to flip the setting.
         settings.isEnabled.toggle()
-        monitor.isEnabled = settings.isEnabled
-        sender.state = settings.isEnabled ? .on : .off
-        updateLayoutIcon()
     }
 
     @objc private func undoSwitch() {
@@ -381,16 +464,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// used to hardcode ⌃⇧Z, so it advertised the wrong shortcut as soon as the user
     /// recorded a different one in Settings.
     private func syncUndoMenuItem(_ item: NSMenuItem) {
-        guard settings.undoHotkeyIsEnabled else {
+        let binding = settings.undoHotkey
+        guard binding.isEnabled else {
             item.keyEquivalent = ""
             item.keyEquivalentModifierMask = []
             return
         }
-        let label = SettingsModel.keyCodeLabel(UInt16(settings.undoHotkeyKeyCode))
+        let label = HotkeyBinding.keyCodeLabel(UInt16(binding.keyCode))
         // Only single characters work as a key equivalent; anything else is left blank
         // and the hotkey still works globally through Carbon.
         item.keyEquivalent = label.count == 1 ? label.lowercased() : ""
-        item.keyEquivalentModifierMask = NSEvent.ModifierFlags(rawValue: settings.undoHotkeyModifiers)
+        item.keyEquivalentModifierMask = NSEvent.ModifierFlags(rawValue: binding.modifiers)
     }
 
     @objc private func openSettings() {
@@ -404,9 +488,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let hostingController = NSHostingController(rootView: settingsView)
 
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "MacKeySwitch Settings"
-        window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 560, height: 500))
+        window.title = L("window.settings")
+        // Resizable on purpose. The window is sized for the longest translation the app
+        // ships with, but that width comes from measuring strings rather than from AppKit's
+        // own tab metrics, so it is an estimate with headroom. Letting the user widen the
+        // window turns any residual mis-estimate into an annoyance instead of permanently
+        // truncated tab titles. The view's `minWidth` stops it being shrunk back into one.
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // Sized from the view rather than a second hardcoded pair of numbers — the two
+        // used to disagree by 40×80pt, which showed up as dead margin around the tabs.
+        window.setContentSize(SettingsView.preferredSize)
+        window.contentMinSize = SettingsView.preferredSize
         window.center()
         window.isReleasedWhenClosed = false
         window.makeKeyAndOrderFront(nil)
@@ -424,11 +516,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
+        enableMenuItem?.state = settings.isEnabled ? .on : .off
         if let layoutItem = menu.item(withTag: 100) {
-            layoutItem.title = "Current: \(InputSourceManager.currentLanguage()?.rawValue ?? "other")"
+            layoutItem.title = L("menu.currentLayout", Self.currentLayoutName)
         }
         if let statsItem = menu.item(withTag: 101) {
-            statsItem.title = "Corrections: \(settings.sessionCorrections) (total: \(settings.totalCorrections))"
+            statsItem.title = L("menu.correctionsWithTotal", settings.sessionCorrections, settings.totalCorrections)
         }
         if let undoItem = menu.item(withTag: 102) {
             syncUndoMenuItem(undoItem)

@@ -1,0 +1,108 @@
+/* MacKeySwitch — English interface strings.
+   Keys are shared with uk.lproj/Localizable.strings; LocalizationTests fails the build
+   if the two files drift apart. */
+
+/* Menu bar */
+"menu.enabled" = "Enabled";
+"menu.undo" = "Undo Last Switch";
+"menu.currentLayout" = "Current: %@";
+"menu.corrections" = "Corrections: %d";
+"menu.correctionsWithTotal" = "Corrections: %1$d (total: %2$d)";
+"menu.settings" = "Settings...";
+"window.settings" = "MacKeySwitch Settings";
+"menu.quit" = "Quit MacKeySwitch";
+
+/* Languages */
+"language.english" = "English";
+"language.ukrainian" = "Ukrainian";
+"language.other" = "Other";
+"language.system" = "System";
+
+/* Tabs */
+"tab.general" = "General";
+"tab.detection" = "Detection";
+"tab.perApp" = "Per-App Rules";
+"tab.dictionary" = "Dictionary";
+"tab.statistics" = "Statistics";
+"tab.about" = "About";
+
+/* General tab */
+"general.section" = "General";
+"general.enable" = "Enable automatic layout switching";
+"general.startAtLogin" = "Start at login";
+"general.showNotifications" = "Show notification on switch";
+"general.language" = "Interface language";
+"general.languageHint" = "Applies immediately. \"System\" follows your language order in System Settings.";
+
+/* Undo hotkey */
+"hotkey.section" = "Undo Hotkey";
+"hotkey.label" = "Undo last correction:";
+"hotkey.recording" = "Press keys… (Esc to cancel, ⌫ to disable)";
+"hotkey.hint" = "Press a key combination with at least one modifier (⌃ ⌥ ⇧ ⌘).";
+"hotkey.disable" = "Disable hotkey";
+"hotkey.disabled" = "Disabled";
+
+/* Status */
+"status.section" = "Status";
+"status.currentLayout" = "Current layout:";
+"status.supportedPair" = "Supported pair:";
+"status.pair" = "Ukrainian ↔ English";
+
+/* Detection tab */
+"detection.section" = "Detection Sensitivity";
+"detection.sensitivity" = "Sensitivity";
+"detection.sensitivityHint" = "Higher sensitivity = more aggressive switching. Lower = fewer false positives.";
+"detection.timingSection" = "Correction Timing";
+"detection.delay" = "Correction delay:";
+"detection.delayValue" = "%d ms";
+"detection.delayHint" = "Delay between deleting wrong text and retyping. Increase if corrections appear garbled.";
+"detection.lengthSection" = "Word Length";
+"detection.minLength" = "Minimum word length: %d";
+"detection.minLengthHint" = "Words shorter than this won't trigger auto-switching.";
+
+/* Sensitivity levels */
+"sensitivity.low" = "Low";
+"sensitivity.medium" = "Medium";
+"sensitivity.high" = "High";
+"sensitivity.veryHigh" = "Very High";
+
+/* Per-app tab */
+"perApp.hint" = "Excluded apps won't trigger automatic layout switching.";
+"perApp.addRunning" = "Add Running App";
+"perApp.addRunningHelp" = "Pick a running app to add to the list";
+"perApp.addRunningEmpty" = "Every running app is already in the list";
+"perApp.addFromFinder" = "Add App from Finder...";
+"perApp.removeAll" = "Remove All";
+"perApp.removeHelp" = "Remove %@ from the list";
+
+/* Dictionary tab */
+"dictionary.english" = "English Words";
+"dictionary.ukrainian" = "Ukrainian Words";
+"dictionary.newWord" = "New word...";
+"dictionary.import" = "Import Dictionary File...";
+"dictionary.importedFiles" = "Imported Dictionary Files";
+"dictionary.importedCount" = "Imported %1$d words from %2$@";
+
+/* Statistics tab */
+"stats.section" = "Correction Statistics";
+"stats.total" = "Total corrections (all time):";
+"stats.session" = "Corrections this session:";
+"stats.reset" = "Reset Statistics";
+"stats.exceptions" = "Self-Learned Exceptions (%d)";
+
+/* Exceptions editor */
+"exceptions.empty" = "No learned exceptions yet. Backspace after a wrong correction to teach the app, or add one below.";
+"exceptions.deleteSelected" = "Delete Selected";
+"exceptions.selectedCount" = "%d selected";
+"exceptions.clearAll" = "Clear All";
+"exceptions.addPlaceholder" = "Add exception word…";
+"exceptions.add" = "Add";
+"exceptions.deleteHelp" = "Delete this word";
+
+/* About tab */
+"about.tagline" = "Automatic Mac Keyboard Switcher";
+"about.version" = "Version %@";
+"about.description" = "Automatic keyboard layout switcher for Ukrainian and English.";
+"about.detail" = "Automatically detects the wrong layout and corrects text in real time.";
+"about.author" = "Created by Oleksandr Kuzmin, 2026";
+"about.licence" = "Licensed under GNU General Public License v3.0 (GPL-3.0)";

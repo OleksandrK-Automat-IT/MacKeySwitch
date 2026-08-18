@@ -1,6 +1,103 @@
 import Foundation
 import Combine
 import AppKit
+import ServiceManagement
+
+/// A global shortcut: a virtual keycode plus the modifiers held with it.
+///
+/// Keycode and modifiers travel together as one value on purpose. They used to be two
+/// separate `@Published` properties, and the observer that re-registered the Carbon hotkey
+/// read them back off the model — but `@Published` emits *before* the property is updated,
+/// so the observer always saw the previous value. Recording ⌥⌘K registered ⌃⇧K, and
+/// clearing the shortcut re-registered the old one instead of unregistering it.
+struct HotkeyBinding: Equatable {
+    var keyCode: Int
+    /// Raw bitmask of NSEvent.ModifierFlags (already & .deviceIndependentFlagsMask).
+    var modifiers: UInt
+
+    static let disabled = HotkeyBinding(keyCode: 0, modifiers: 0)
+
+    /// Keycode 0 is 'A', which is never a usable global shortcut on its own, so it doubles
+    /// as the "no shortcut" marker.
+    var isEnabled: Bool { keyCode != 0 }
+
+    /// Human-readable hotkey: e.g. "⌃⇧Z"
+    var description: String {
+        guard isEnabled else { return L("hotkey.disabled") }
+        let flags = NSEvent.ModifierFlags(rawValue: modifiers)
+        var s = ""
+        if flags.contains(.control) { s += "\u{2303}" }   // ⌃
+        if flags.contains(.option)  { s += "\u{2325}" }   // ⌥
+        if flags.contains(.shift)   { s += "\u{21E7}" }   // ⇧
+        if flags.contains(.command) { s += "\u{2318}" }   // ⌘
+        s += Self.keyCodeLabel(UInt16(keyCode))
+        return s
+    }
+
+    /// Best-effort human label for a virtual keycode.
+    static func keyCodeLabel(_ kc: UInt16) -> String {
+        switch kc {
+        case 0x00: return "A"
+        case 0x01: return "S"
+        case 0x02: return "D"
+        case 0x03: return "F"
+        case 0x04: return "H"
+        case 0x05: return "G"
+        case 0x06: return "Z"
+        case 0x07: return "X"
+        case 0x08: return "C"
+        case 0x09: return "V"
+        case 0x0B: return "B"
+        case 0x0C: return "Q"
+        case 0x0D: return "W"
+        case 0x0E: return "E"
+        case 0x0F: return "R"
+        case 0x10: return "Y"
+        case 0x11: return "T"
+        case 0x1F: return "O"
+        case 0x20: return "U"
+        case 0x22: return "I"
+        case 0x23: return "P"
+        case 0x25: return "L"
+        case 0x26: return "J"
+        case 0x28: return "K"
+        case 0x2D: return "N"
+        case 0x2E: return "M"
+        case 0x12: return "1"
+        case 0x13: return "2"
+        case 0x14: return "3"
+        case 0x15: return "4"
+        case 0x16: return "6"
+        case 0x17: return "5"
+        case 0x19: return "9"
+        case 0x1A: return "7"
+        case 0x1C: return "8"
+        case 0x1D: return "0"
+        case 0x24: return "\u{21A9}"   // return
+        case 0x30: return "\u{21E5}"   // tab
+        case 0x31: return "Space"
+        case 0x33: return "\u{232B}"   // backspace
+        case 0x35: return "Esc"
+        case 0x7B: return "\u{2190}"   // left
+        case 0x7C: return "\u{2192}"   // right
+        case 0x7D: return "\u{2193}"   // down
+        case 0x7E: return "\u{2191}"   // up
+        case 0x7A: return "F1"
+        case 0x78: return "F2"
+        case 0x63: return "F3"
+        case 0x76: return "F4"
+        case 0x60: return "F5"
+        case 0x61: return "F6"
+        case 0x62: return "F7"
+        case 0x64: return "F8"
+        case 0x65: return "F9"
+        case 0x6D: return "F10"
+        case 0x67: return "F11"
+        case 0x6F: return "F12"
+        default:   return "Key\(kc)"
+        }
+    }
+}
 
 final class SettingsModel: ObservableObject {
     static let shared = SettingsModel()
@@ -13,11 +110,10 @@ final class SettingsModel: ObservableObject {
         didSet { defaults.set(isEnabled, forKey: "isEnabled") }
     }
 
+    /// Not persisted in our own defaults — `SMAppService` already stores this, and keeping
+    /// a second copy only creates a way for the two to disagree.
     @Published var autoStartOnLogin: Bool {
-        didSet {
-            defaults.set(autoStartOnLogin, forKey: "autoStartOnLogin")
-            updateLaunchAgent()
-        }
+        didSet { updateLaunchAgent() }
     }
 
     @Published var showNotifications: Bool {
@@ -36,10 +132,10 @@ final class SettingsModel: ObservableObject {
 
         var label: String {
             switch self {
-            case .low: return "Low"
-            case .medium: return "Medium"
-            case .high: return "High"
-            case .veryHigh: return "Very High"
+            case .low: return L("sensitivity.low")
+            case .medium: return L("sensitivity.medium")
+            case .high: return L("sensitivity.high")
+            case .veryHigh: return L("sensitivity.veryHigh")
             }
         }
 
@@ -126,94 +222,11 @@ final class SettingsModel: ObservableObject {
 
     // MARK: - Undo Hotkey
 
-    /// Virtual keycode for the undo hotkey. 0 = disabled.
-    /// Default 0x06 = 'Z'.
-    @Published var undoHotkeyKeyCode: Int {
-        didSet { defaults.set(undoHotkeyKeyCode, forKey: "undoHotkeyKeyCode") }
-    }
-
-    /// Raw bitmask of NSEvent.ModifierFlags (already &.deviceIndependentFlagsMask).
-    /// Default = Control+Shift.
-    @Published var undoHotkeyModifiers: UInt {
-        didSet { defaults.set(Int(bitPattern: undoHotkeyModifiers), forKey: "undoHotkeyModifiers") }
-    }
-
-    var undoHotkeyIsEnabled: Bool { undoHotkeyKeyCode != 0 }
-
-    /// Human-readable hotkey: e.g. "⌃⇧Z"
-    var undoHotkeyDescription: String {
-        guard undoHotkeyIsEnabled else { return "Disabled" }
-        let flags = NSEvent.ModifierFlags(rawValue: undoHotkeyModifiers)
-        var s = ""
-        if flags.contains(.control) { s += "\u{2303}" }   // ⌃
-        if flags.contains(.option)  { s += "\u{2325}" }   // ⌥
-        if flags.contains(.shift)   { s += "\u{21E7}" }   // ⇧
-        if flags.contains(.command) { s += "\u{2318}" }   // ⌘
-        s += Self.keyCodeLabel(UInt16(undoHotkeyKeyCode))
-        return s
-    }
-
-    /// Best-effort human label for a virtual keycode.
-    static func keyCodeLabel(_ kc: UInt16) -> String {
-        switch kc {
-        case 0x00: return "A"
-        case 0x01: return "S"
-        case 0x02: return "D"
-        case 0x03: return "F"
-        case 0x04: return "H"
-        case 0x05: return "G"
-        case 0x06: return "Z"
-        case 0x07: return "X"
-        case 0x08: return "C"
-        case 0x09: return "V"
-        case 0x0B: return "B"
-        case 0x0C: return "Q"
-        case 0x0D: return "W"
-        case 0x0E: return "E"
-        case 0x0F: return "R"
-        case 0x10: return "Y"
-        case 0x11: return "T"
-        case 0x1F: return "O"
-        case 0x20: return "U"
-        case 0x22: return "I"
-        case 0x23: return "P"
-        case 0x25: return "L"
-        case 0x26: return "J"
-        case 0x28: return "K"
-        case 0x2D: return "N"
-        case 0x2E: return "M"
-        case 0x12: return "1"
-        case 0x13: return "2"
-        case 0x14: return "3"
-        case 0x15: return "4"
-        case 0x16: return "6"
-        case 0x17: return "5"
-        case 0x19: return "9"
-        case 0x1A: return "7"
-        case 0x1C: return "8"
-        case 0x1D: return "0"
-        case 0x24: return "\u{21A9}"   // return
-        case 0x30: return "\u{21E5}"   // tab
-        case 0x31: return "Space"
-        case 0x33: return "\u{232B}"   // backspace
-        case 0x35: return "Esc"
-        case 0x7B: return "\u{2190}"   // left
-        case 0x7C: return "\u{2192}"   // right
-        case 0x7D: return "\u{2193}"   // down
-        case 0x7E: return "\u{2191}"   // up
-        case 0x7A: return "F1"
-        case 0x78: return "F2"
-        case 0x63: return "F3"
-        case 0x76: return "F4"
-        case 0x60: return "F5"
-        case 0x61: return "F6"
-        case 0x62: return "F7"
-        case 0x64: return "F8"
-        case 0x65: return "F9"
-        case 0x6D: return "F10"
-        case 0x67: return "F11"
-        case 0x6F: return "F12"
-        default:   return "Key\(kc)"
+    /// The global undo shortcut. Default ⌃⇧Z.
+    @Published var undoHotkey: HotkeyBinding {
+        didSet {
+            defaults.set(undoHotkey.keyCode, forKey: "undoHotkeyKeyCode")
+            defaults.set(Int(bitPattern: undoHotkey.modifiers), forKey: "undoHotkeyModifiers")
         }
     }
 
@@ -229,7 +242,9 @@ final class SettingsModel: ObservableObject {
 
     private init() {
         self.isEnabled = defaults.object(forKey: "isEnabled") as? Bool ?? true
-        self.autoStartOnLogin = defaults.object(forKey: "autoStartOnLogin") as? Bool ?? false
+        // The system is the source of truth here, not our own defaults: the user can turn
+        // the login item off in System Settings without ever opening this app.
+        self.autoStartOnLogin = LoginItem.isEnabled
         self.showNotifications = defaults.object(forKey: "showNotifications") as? Bool ?? true
 
         let rawSensitivity = defaults.object(forKey: "sensitivity") as? Int ?? Sensitivity.medium.rawValue
@@ -251,13 +266,11 @@ final class SettingsModel: ObservableObject {
 
         self.totalCorrections = defaults.object(forKey: "totalCorrections") as? Int ?? 0
 
-        self.undoHotkeyKeyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? 0x06 // 'Z'
-        let defaultMods = NSEvent.ModifierFlags([.control, .shift]).rawValue
-        if let stored = defaults.object(forKey: "undoHotkeyModifiers") as? Int {
-            self.undoHotkeyModifiers = UInt(bitPattern: stored)
-        } else {
-            self.undoHotkeyModifiers = defaultMods
-        }
+        let keyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? 0x06 // 'Z'
+        let storedMods = defaults.object(forKey: "undoHotkeyModifiers") as? Int
+        let modifiers = storedMods.map { UInt(bitPattern: $0) }
+            ?? NSEvent.ModifierFlags([.control, .shift]).rawValue
+        self.undoHotkey = HotkeyBinding(keyCode: keyCode, modifiers: modifiers)
 
         if let data = defaults.data(forKey: "appRules"),
            let rules = try? JSONDecoder().decode([AppRule].self, from: data) {
@@ -265,6 +278,8 @@ final class SettingsModel: ObservableObject {
         } else {
             self.appRules = []
         }
+
+        LoginItem.removeLegacyLaunchAgent()
     }
 
     // MARK: - Helpers
@@ -303,28 +318,66 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// Ask the system to launch the app at login, and put the toggle back if it refuses.
     private func updateLaunchAgent() {
-        let plistPath = NSHomeDirectory() + "/Library/LaunchAgents/com.layoutswitcher.plist"
-        let fm = FileManager.default
+        do {
+            try LoginItem.setEnabled(autoStartOnLogin)
+        } catch {
+            print("[MacKeySwitch] Login item update failed: \(error.localizedDescription)")
+        }
 
-        if autoStartOnLogin {
-            let execPath = Bundle.main.executablePath ?? ProcessInfo.processInfo.arguments[0]
-            let plist: [String: Any] = [
-                "Label": "com.layoutswitcher",
-                "ProgramArguments": [execPath],
-                "RunAtLoad": true,
-                "KeepAlive": false,
-            ]
+        // Reflect what the system actually did. Registration fails when the app is not a
+        // real bundle (a bare `swift run` build) or when the user has denied it in
+        // System Settings, and a toggle that lies about its state is worse than one that
+        // snaps back.
+        let actual = LoginItem.isEnabled
+        guard actual != autoStartOnLogin else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.autoStartOnLogin != actual else { return }
+            self.autoStartOnLogin = actual
+        }
+    }
+}
 
-            let dir = NSHomeDirectory() + "/Library/LaunchAgents"
-            try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+// MARK: - Login Item
 
-            let data = try? PropertyListSerialization.data(
-                fromPropertyList: plist, format: .xml, options: 0
-            )
-            fm.createFile(atPath: plistPath, contents: data)
+/// "Start at login", via the framework Apple actually supports on macOS 13+.
+///
+/// The previous implementation hand-wrote a LaunchAgent plist into
+/// `~/Library/LaunchAgents`. That approach has no way to report failure, wrote an empty
+/// file when property-list serialisation returned nil, used a label that did not match the
+/// bundle identifier, never ran `launchctl` (so nothing took effect until the next login),
+/// and left the plist behind when the app was deleted. `SMAppService` has none of those
+/// problems and shows the app in System Settings → General → Login Items.
+enum LoginItem {
+    private static let legacyPlistPath =
+        NSHomeDirectory() + "/Library/LaunchAgents/com.layoutswitcher.plist"
+
+    static var isEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    static func setEnabled(_ enabled: Bool) throws {
+        let service = SMAppService.mainApp
+        if enabled {
+            guard service.status != .enabled else { return }
+            try service.register()
         } else {
-            try? fm.removeItem(atPath: plistPath)
+            guard service.status == .enabled else { return }
+            try service.unregister()
+        }
+    }
+
+    /// Clean up after the hand-rolled LaunchAgent, so upgrading users are not launched
+    /// twice — once by the stale plist and once by the registered login item.
+    static func removeLegacyLaunchAgent() {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: legacyPlistPath) else { return }
+        do {
+            try fm.removeItem(atPath: legacyPlistPath)
+            print("[MacKeySwitch] Removed legacy LaunchAgent plist.")
+        } catch {
+            print("[MacKeySwitch] Could not remove legacy LaunchAgent: \(error.localizedDescription)")
         }
     }
 }

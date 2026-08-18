@@ -1,24 +1,17 @@
 import Carbon
 import Foundation
 
+/// Reads and selects keyboard input sources.
+///
+/// Main-thread only: the TIS APIs belong to the main thread, and the "last used source"
+/// memory below is plain mutable state with no lock.
 final class InputSourceManager {
-    // Input source identifiers
-    static let englishSourceID = "com.apple.keylayout.US"
-    // Common Ukrainian input source IDs
+    /// Common Ukrainian input source IDs
     static let ukrainianSourceIDs: Set<String> = [
         "com.apple.keylayout.Ukrainian",
         "com.apple.keylayout.Ukrainian-PC",
         "com.apple.keylayout.UkrainianEnhanced",
     ]
-
-    /// Returns the current input source identifier string
-    static func currentInputSourceID() -> String {
-        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
-        guard let idPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
-            return ""
-        }
-        return Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
-    }
 
     /// Latin layouts this app treats as "English". Matched exactly: a substring test for
     /// "US" also matches unrelated third-party layouts with "US" anywhere in their ID.
@@ -36,9 +29,25 @@ final class InputSourceManager {
         "com.apple.keylayout.Irish",
     ]
 
-    /// Returns the current language if it's English or Ukrainian, nil otherwise
-    static func currentLanguage() -> Language? {
-        let sourceID = currentInputSourceID()
+    /// The source the user was last seen using for each language.
+    ///
+    /// Switching used to hardcode `com.apple.keylayout.US`, so a user who works on ABC or
+    /// British — both recognised as English above — was silently moved onto a different
+    /// layout by every correction. Remembering what they actually had selected keeps the
+    /// switch reversible.
+    private static var lastUsedSourceID: [Language: String] = [:]
+
+    /// Returns the current input source identifier string
+    static func currentInputSourceID() -> String {
+        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        guard let idPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
+            return ""
+        }
+        return Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
+    }
+
+    /// Which language an input source ID belongs to, or nil if it is neither.
+    static func language(ofSourceID sourceID: String) -> Language? {
         if englishSourceIDs.contains(sourceID) {
             return .english
         }
@@ -51,67 +60,49 @@ final class InputSourceManager {
         return nil
     }
 
-    /// Switch to the specified language input source
-    static func switchTo(_ language: Language) {
-        let targetID: String
-        switch language {
-        case .english:
-            targetID = englishSourceID
-        case .ukrainian:
-            // Try to find the actual installed Ukrainian source
-            targetID = findInstalledUkrainianSource() ?? "com.apple.keylayout.Ukrainian"
-        }
+    /// Returns the current language if it's English or Ukrainian, nil otherwise
+    static func currentLanguage() -> Language? {
+        let sourceID = currentInputSourceID()
+        guard let language = language(ofSourceID: sourceID) else { return nil }
+        lastUsedSourceID[language] = sourceID
+        return language
+    }
 
-        guard let sources = TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource] else {
+    /// Switch to the specified language input source, preferring the exact source the user
+    /// was last using for it.
+    static func switchTo(_ language: Language) {
+        let enabled = enabledSources()
+
+        // 1. The source this user actually works in, if it is still enabled.
+        if let remembered = lastUsedSourceID[language],
+           let source = enabled.first(where: { $0.id == remembered }) {
+            TISSelectInputSource(source.source)
             return
         }
 
-        for source in sources {
-            guard let idPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
-                continue
-            }
-            let id = Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
-            if id == targetID {
-                TISSelectInputSource(source)
-                return
-            }
+        // 2. Otherwise the first enabled source of that language, in the order the system
+        //    lists them — never a hardcoded ID that may not even be the user's.
+        if let source = enabled.first(where: { self.language(ofSourceID: $0.id) == language }) {
+            lastUsedSourceID[language] = source.id
+            TISSelectInputSource(source.source)
+            return
         }
 
-        // Fallback: try partial match
-        for source in sources {
-            guard let idPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
-                continue
-            }
-            let id = Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
-            switch language {
-            case .english:
-                if englishSourceIDs.contains(id) {
-                    TISSelectInputSource(source)
-                    return
-                }
-            case .ukrainian:
-                if id.lowercased().contains("ukrainian") {
-                    TISSelectInputSource(source)
-                    return
-                }
-            }
-        }
+        print("[LayoutSwitcher] No enabled input source found for \(language.rawValue)")
     }
 
-    /// Find the installed Ukrainian input source ID
-    private static func findInstalledUkrainianSource() -> String? {
-        guard let sources = TISCreateInputSourceList(nil, false)?.takeRetainedValue() as? [TISInputSource] else {
-            return nil
+    /// Enabled (not merely installed) keyboard input sources, with their IDs.
+    private static func enabledSources() -> [(source: TISInputSource, id: String)] {
+        guard let sources = TISCreateInputSourceList(nil, false)?.takeRetainedValue()
+                as? [TISInputSource] else {
+            return []
         }
-        for source in sources {
+        return sources.compactMap { source in
             guard let idPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID) else {
-                continue
+                return nil
             }
             let id = Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
-            if id.lowercased().contains("ukrainian") {
-                return id
-            }
+            return (source, id)
         }
-        return nil
     }
 }

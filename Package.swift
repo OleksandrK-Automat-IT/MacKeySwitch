@@ -3,6 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "LayoutSwitcher",
+    defaultLocalization: "en",
     platforms: [.macOS(.v13)],
     targets: [
         .target(
@@ -17,6 +18,12 @@ let package = Package(
             resources: [
                 .copy("Resources/en_words.txt"),
                 .copy("Resources/ua_words.txt"),
+                // `.copy` rather than `.process`: the app picks its own `.lproj` at runtime
+                // (Settings → Interface language), so the directories have to survive into
+                // the bundle verbatim instead of being folded into SwiftPM's own
+                // localization handling.
+                .copy("Resources/en.lproj"),
+                .copy("Resources/uk.lproj"),
             ],
             linkerSettings: [
                 .linkedFramework("Carbon"),

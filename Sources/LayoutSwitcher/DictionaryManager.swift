@@ -126,57 +126,14 @@ final class DictionaryManager: WordSource {
 
     // MARK: - Resource Loading
 
-    /// Safely get the SPM resource bundle without crashing
-    private static let safeResourceBundle: Bundle? = {
-        let bundleName = "LayoutSwitcher_LayoutSwitcher.bundle"
-
-        // 1. SPM default: next to the executable
-        let mainPath = Bundle.main.bundleURL.appendingPathComponent(bundleName).path
-        if let b = Bundle(path: mainPath) { return b }
-
-        // 2. Inside Contents/Resources/ (.app bundle layout)
-        let execURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
-        let appResourcesPath = execURL.deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources")
-            .appendingPathComponent(bundleName).path
-        if let b = Bundle(path: appResourcesPath) { return b }
-
-        // 3. Next to the executable directly
-        let siblingPath = execURL.deletingLastPathComponent()
-            .appendingPathComponent(bundleName).path
-        if let b = Bundle(path: siblingPath) { return b }
-
-        return nil
-    }()
-
-    /// Find a resource file, checking multiple locations
+    /// Find a resource file, checking every layout the installer has used. See
+    /// `ResourceBundle`, which the localization tables share.
     private func findResource(_ name: String, ext: String) -> URL? {
-        // 1. Safe resource bundle (SPM bundle, avoids fatalError)
-        if let bundle = DictionaryManager.safeResourceBundle,
-           let url = bundle.url(forResource: name, withExtension: ext) {
-            return url
+        guard let url = ResourceBundle.url(forResource: name, extension: ext) else {
+            print("[LayoutSwitcher] WARNING: Could not find resource \(name).\(ext)")
+            return nil
         }
-        // 2. Main app bundle Resources/ (loose files)
-        if let url = Bundle.main.url(forResource: name, withExtension: ext) {
-            return url
-        }
-        // 3. Next to the executable
-        let execURL = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0])
-        let siblingURL = execURL.deletingLastPathComponent().appendingPathComponent("\(name).\(ext)")
-        if FileManager.default.fileExists(atPath: siblingURL.path) {
-            return siblingURL
-        }
-        // 4. In ../Resources/ relative to executable (standard .app layout)
-        let resourcesURL = execURL.deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources")
-            .appendingPathComponent("\(name).\(ext)")
-        if FileManager.default.fileExists(atPath: resourcesURL.path) {
-            return resourcesURL
-        }
-        print("[LayoutSwitcher] WARNING: Could not find resource \(name).\(ext)")
-        return nil
+        return url
     }
 
     // MARK: - Custom Dictionary File Loading

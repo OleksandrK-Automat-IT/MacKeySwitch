@@ -146,4 +146,26 @@ enum AppIconRenderer {
             return false
         }
     }
+
+    /// The (filename, pixel size) pairs `iconutil` expects inside an `.iconset` directory.
+    private static let iconSetVariants: [(name: String, size: CGFloat)] = [
+        ("icon_16x16", 16), ("icon_16x16@2x", 32),
+        ("icon_32x32", 32), ("icon_32x32@2x", 64),
+        ("icon_128x128", 128), ("icon_128x128@2x", 256),
+        ("icon_256x256", 256), ("icon_256x256@2x", 512),
+        ("icon_512x512", 512), ("icon_512x512@2x", 1024),
+    ]
+
+    /// Populate an `.iconset` directory, so the build script can turn it into the `.icns`
+    /// the bundle ships. The icon is drawn from the same code as the About tab, which is
+    /// why it is generated here rather than checked in as a binary that can drift.
+    static func writeIconSet(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for variant in iconSetVariants {
+            let url = directory.appendingPathComponent("\(variant.name).png")
+            guard writePNG(size: variant.size, to: url) else {
+                throw CocoaError(.fileWriteUnknown)
+            }
+        }
+    }
 }

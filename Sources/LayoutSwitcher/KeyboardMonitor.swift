@@ -19,9 +19,9 @@ private func eventTapCallback(
 }
 
 final class KeyboardMonitor {
-    /// Global flag set by AppDelegate after auth request resolves.
-    /// Defaults to false until explicitly set true — prevents any UN call on first run.
-    static var notificationsAvailable: Bool = false
+    /// Set by AppDelegate once the notification authorization request resolves.
+    /// Defaults to false until then — prevents any UN call on first run.
+    var notificationsAvailable: Bool = false
 
     /// Stamped into every event this app posts, and checked in the tap callback.
     /// The corrections are typed back into the session tap the monitor itself listens on,
@@ -33,8 +33,13 @@ final class KeyboardMonitor {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
-    // Buffer of (keycode, isShifted) for current word
-    private var keyBuffer: [(UInt16, Bool)] = []
+    /// The contiguous run of reconstructable characters immediately before the caret.
+    ///
+    /// The correction erases that run with a counted run of backspaces, so the buffer must
+    /// never claim more (or fewer) characters than are actually on screen. Anything that
+    /// breaks the correspondence — a digit, a '-', an arrow key, a mouse click — empties it
+    /// rather than silently desynchronising it. See `invalidateBuffer`.
+    private var keyBuffer: [Keystroke] = []
 
     /// Password shape of the current run of keystrokes, fed digits as well as letters.
     private var passwordHeuristic = PasswordHeuristic()
@@ -61,6 +66,22 @@ final class KeyboardMonitor {
     /// Set at word-start when manual switch was recent; forces the current word to skip correction.
     private var skipCurrentWordCorrection: Bool = false
 
+    /// When this app last selected an input source itself. The layout-change notification
+    /// arrives asynchronously and can land after `isCorrecting` has already been cleared,
+    /// at which point the app's own switch reads as the user's and suppresses the next
+    /// word. A short window closes that race; `isCorrecting` alone could not.
+    private var lastSelfSwitchTime: Date?
+    private static let selfSwitchGrace: TimeInterval = 1.0
+
+    /// Layout and frontmost app, cached rather than queried per keystroke.
+    ///
+    /// `TISCopyCurrentKeyboardInputSource` and `NSWorkspace.frontmostApplication` are both
+    /// cross-process calls, and this runs on the main thread inside an event tap callback —
+    /// where piling up work invites `tapDisabledByTimeout`. Both values change only on a
+    /// notification the app already receives.
+    private var cachedLayout: Language?
+    private var cachedFrontmostBundleID: String?
+
     // Max buffer length — prevents unbounded growth in long URL/password fields
     private let maxBufferLength = 64
 
@@ -76,12 +97,11 @@ final class KeyboardMonitor {
         set { stateLock.lock(); _isCorrecting = newValue; stateLock.unlock() }
     }
 
-    // Callback for undo hotkey
-    var onUndoRequest: (() -> Void)?
-
     var settings: SettingsModel?
 
     func start() {
+        guard eventTap == nil else { return }
+
         let trusted = AXIsProcessTrusted()
         print("[LayoutSwitcher] Accessibility trusted: \(trusted)")
         if !trusted {
@@ -98,7 +118,17 @@ final class KeyboardMonitor {
             )
         }
 
-        let eventMask: CGEventMask = (1 << CGEventType.keyDown.rawValue)
+        // Seed the caches the tap callback reads. From here on they are notification-driven.
+        cachedLayout = InputSourceManager.currentLanguage()
+        cachedFrontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+
+        // Mouse clicks move the caret without producing a keystroke, which would leave the
+        // buffer describing a run of text that is no longer in front of the caret.
+        let eventMask: CGEventMask =
+            (1 << CGEventType.keyDown.rawValue)
+            | (1 << CGEventType.leftMouseDown.rawValue)
+            | (1 << CGEventType.rightMouseDown.rawValue)
+            | (1 << CGEventType.otherMouseDown.rawValue)
         let selfPtr = Unmanaged.passUnretained(self).toOpaque()
 
         guard let tap = CGEvent.tapCreate(
@@ -122,14 +152,47 @@ final class KeyboardMonitor {
     }
 
     func stop() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-        }
         if let source = runLoopSource {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, .commonModes)
+            CFRunLoopSourceInvalidate(source)
+        }
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            // Removing the run loop source is not enough: the Mach port keeps the tap
+            // registered with the window server until it is invalidated.
+            CFMachPortInvalidate(tap)
         }
         eventTap = nil
         runLoopSource = nil
+        resetBuffer()
+    }
+
+    deinit {
+        stop()
+    }
+
+    // MARK: - Cache updates (pushed by AppDelegate's system observers)
+
+    /// The selected keyboard layout changed. Refreshes the cache and, when the change came
+    /// from the user rather than from this app, suppresses the next word's correction.
+    func layoutDidChange() {
+        cachedLayout = InputSourceManager.currentLanguage()
+
+        let selfSwitchedRecently = lastSelfSwitchTime.map {
+            Date().timeIntervalSince($0) < Self.selfSwitchGrace
+        } ?? false
+        guard !isCorrecting, !selfSwitchedRecently else { return }
+
+        lastManualSwitchTime = Date()
+        // The run in front of the caret was typed in the previous layout; it can no longer
+        // be reconstructed as one word.
+        resetBuffer()
+        debugLog("[LayoutSwitcher] Manual layout switch detected, suppressing next word")
+    }
+
+    /// The frontmost application changed. The caret is now somewhere else entirely.
+    func frontmostAppDidChange(bundleID: String?) {
+        cachedFrontmostBundleID = bundleID
         resetBuffer()
     }
 
@@ -140,6 +203,13 @@ final class KeyboardMonitor {
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
             }
+            return
+        }
+
+        // A click can put the caret anywhere. Whatever the buffer described is no longer
+        // the text immediately behind it.
+        if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            resetBuffer()
             return
         }
 
@@ -163,15 +233,14 @@ final class KeyboardMonitor {
 
         // Per-app exclusion
         if let settings = settings,
-           let frontApp = NSWorkspace.shared.frontmostApplication,
-           let bundleID = frontApp.bundleIdentifier,
+           let bundleID = cachedFrontmostBundleID,
            settings.isAppExcluded(bundleID: bundleID) {
             resetBuffer()
             return
         }
 
         // Only monitor EN or UA layouts
-        guard let currentLang = InputSourceManager.currentLanguage() else {
+        guard let currentLang = cachedLayout else {
             resetBuffer()
             return
         }
@@ -186,6 +255,7 @@ final class KeyboardMonitor {
 
         let keycode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
         let isShifted = flags.contains(.maskShift)
+        let capsLock = flags.contains(.maskAlphaShift)
 
         // --- Self-learning: detect undo pattern ---
         // If user presses backspace right after a correction, they're undoing it
@@ -199,14 +269,18 @@ final class KeyboardMonitor {
             passwordHeuristic.removeLast()
             if keyBuffer.isEmpty {
                 wordStartLayout = nil
+            }
+            // Keyed on the heuristic's own count, not the buffer's: the buffer also empties
+            // when an unbufferable key arrives, and "Ab12" is still one run at that point.
+            if passwordHeuristic.printableCount == 0 {
                 passwordHeuristic.reset()
             }
             return
         }
 
         // Any non-backspace key clears the undo tracking AND the undo-target snapshot.
-        // Otherwise the undo hotkey 2 words later would Option+Shift+Left-select the wrong
-        // word and replace it with the previous correction's original text.
+        // Otherwise the undo hotkey 2 words later would erase the wrong word and replace
+        // it with the previous correction's original text.
         clearCorrectionSnapshot()
 
         // Word boundary — perform correction here (never mid-word)
@@ -223,14 +297,28 @@ final class KeyboardMonitor {
         // keys — so the heuristic never fired at all.
         passwordHeuristic.record(keycode: keycode, isShifted: isShifted)
 
-        guard KeyMapping.isLetterKey(keycode) else { return }
+        // Everything that is not a buffered letter key breaks the buffer's correspondence
+        // with the screen, and has to empty it rather than be ignored:
+        //
+        //   * digits and '-', '=', '\', '/' print a character that is never buffered, so
+        //     the backspace count would come up short. "ghbdsn123 " used to erase seven
+        //     characters from a ten-character run and leave "ghbdпривіт ".
+        //   * arrows, Home/End, forward-delete and Esc move the caret or the text around
+        //     it, so the buffered run is no longer what sits behind the caret.
+        //
+        // Emptying is not the same as resetting: the password heuristic keeps running,
+        // because "Ab12cd" is one run of keystrokes even though the digits never buffer.
+        guard KeyMapping.isLetterKey(keycode) else {
+            invalidateBuffer()
+            return
+        }
 
         // Track layout at word start
         if keyBuffer.isEmpty {
             wordStartLayout = currentLang
         }
 
-        keyBuffer.append((keycode, isShifted))
+        keyBuffer.append(Keystroke(keycode: keycode, shift: isShifted, capsLock: capsLock))
 
         // Cap buffer length — avoids unbounded growth in fields without spaces (URLs, passwords)
         if keyBuffer.count > maxBufferLength {
@@ -361,12 +449,14 @@ final class KeyboardMonitor {
         //
         // The count is exact: every buffered keystroke produces exactly one character in
         // either layout (asserted in KeyMappingTests), plus one for the trailing space.
+        // Keys that print without buffering empty the buffer instead — see handleEvent.
         deleteBackward(characters: originalText.count + 1)
 
         usleep(delayUs)
 
         // Switch input source (TIS APIs must run on the main thread)
         DispatchQueue.main.sync {
+            self.lastSelfSwitchTime = Date()
             InputSourceManager.switchTo(to)
         }
 
@@ -398,16 +488,6 @@ final class KeyboardMonitor {
         }
     }
 
-    // MARK: - Manual Layout Switch Detection
-
-    /// Called when the system detects a keyboard layout change (via DistributedNotificationCenter).
-    /// If monitor is NOT in the middle of a correction, this is a manual switch by the user.
-    func notifyManualLayoutSwitch() {
-        guard !isCorrecting else { return }
-        lastManualSwitchTime = Date()
-        debugLog("[LayoutSwitcher] Manual layout switch detected, suppressing next word")
-    }
-
     // MARK: - Undo Last Correction
 
     /// Undo the last auto-correction: delete the corrected word, switch back, retype original.
@@ -417,7 +497,15 @@ final class KeyboardMonitor {
         let originalLayoutOpt = lastOriginalLayout
         let correctionTimeOpt = lastCorrectionTime
         let correctedFormOpt = lastCorrectedWord
+        let busy = _isCorrecting
         stateLock.unlock()
+
+        // A correction still being typed owns the caret; undoing into it would interleave
+        // two runs of synthetic keystrokes.
+        guard !busy else {
+            print("[LayoutSwitcher] Correction in progress, ignoring undo")
+            return
+        }
 
         // The corrected form is required, not optional: its length is how much text has to
         // be erased before the original can be retyped.
@@ -431,10 +519,10 @@ final class KeyboardMonitor {
         }
 
         let delayMs = settings?.correctionDelayMs ?? 50
+        isCorrecting = true
 
         correctionQueue.async { [weak self] in
             guard let self = self else { return }
-            self.isCorrecting = true
             let delayUs = UInt32(max(delayMs, 50) * 1000)
 
             // Erase the corrected word and its trailing space. Counted, not selected —
@@ -444,6 +532,7 @@ final class KeyboardMonitor {
 
             // Switch back to original layout (TIS APIs must run on main thread)
             DispatchQueue.main.sync {
+                self.lastSelfSwitchTime = Date()
                 InputSourceManager.switchTo(originalLayout)
             }
             usleep(delayUs)
@@ -465,9 +554,7 @@ final class KeyboardMonitor {
                 self.backspaceCountAfterCorrection = 0
 
                 // Record only the corrected form (per user preference).
-                if !correctedForm.isEmpty {
-                    self.settings?.addException(correctedForm)
-                }
+                self.settings?.addException(correctedForm)
             }
 
             debugLog("[LayoutSwitcher] Undo: restored '\(originalText)' (\(originalLayout.rawValue))")
@@ -476,11 +563,20 @@ final class KeyboardMonitor {
 
     // MARK: - Helpers
 
+    /// Full reset at a word boundary, or when the caret has moved somewhere unknown.
     private func resetBuffer() {
         keyBuffer.removeAll()
         wordStartLayout = nil
         skipCurrentWordCorrection = false
         passwordHeuristic.reset()
+    }
+
+    /// Drop the reconstructable run but keep the password heuristic going. Used for keys
+    /// that print a character the buffer cannot represent, or that move the caret, without
+    /// ending the word the user is typing.
+    private func invalidateBuffer() {
+        keyBuffer.removeAll()
+        wordStartLayout = nil
     }
 
     /// Post an event, stamped so the tap callback can tell it apart from real typing.
@@ -529,12 +625,12 @@ final class KeyboardMonitor {
     }
 
     private func showNotification(from: Language, to: Language, word: String) {
-        // Only attempt if authorization resolved successfully at launch.
-        guard KeyboardMonitor.notificationsAvailable else { return }
-
         let fromLabel = from.rawValue.capitalized
         let toLabel = to.rawValue.capitalized
-        DispatchQueue.main.async {
+        DispatchQueue.main.async { [weak self] in
+            // Only attempt if authorization resolved successfully at launch.
+            guard let self = self, self.notificationsAvailable else { return }
+
             // Guard against NSInternalInconsistencyException on ad-hoc / unsigned bundles.
             _ = ObjCExceptionGuard.tryBlock {
                 let content = UNMutableNotificationContent()
