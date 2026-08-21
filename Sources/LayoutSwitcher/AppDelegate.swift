@@ -150,10 +150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .store(in: &cancellables)
     }
 
-    /// The active layout's name, for display.
-    private static var currentLayoutName: String {
-        InputSourceManager.currentLanguage()?.localizedName ?? L("language.other")
-    }
+
 
     // MARK: - System Observers
 
@@ -219,9 +216,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             button.image?.isTemplate = false
 
         case nil:
-            button.image = nil
-            button.title = "??"
+            // Some other layout. Show its country's flag rather than the "??" that used to
+            // sit here — it said only "not one of the two", when what the user wants to know
+            // is which layout is actually active.
+            let badge = Self.badge(forOtherLayout: InputSourceManager.currentSourceLanguageTag())
+            if let image = Self.badgeImage(badge) {
+                // Rendered into an image the same size as the drawn flags, rather than set
+                // as the button's title: emoji and text have different metrics, so the
+                // status item would change width and baseline every time the user switched
+                // between a corrected layout and any other.
+                // `isTemplate` is decided in badgeImage — flags keep their colours, the
+                // text fallback has to adapt to the menu bar's theme.
+                button.title = ""
+                button.image = image
+            } else {
+                button.image = nil
+                button.title = badge
+            }
         }
+    }
+
+    /// Draw a badge into the same 22x14 box the hand-drawn flags use.
+    static func badgeImage(_ badge: String) -> NSImage? {
+        guard !badge.isEmpty else { return nil }
+        let size = NSSize(width: 22, height: 14)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        // Flags are wide glyphs and plain codes are narrow ones, so the text is measured and
+        // scaled to fit rather than set at a fixed point size.
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13)
+        ]
+        var measured = (badge as NSString).size(withAttributes: attributes)
+        if measured.width > size.width || measured.height > size.height {
+            let scale = min(size.width / measured.width, size.height / measured.height)
+            attributes[.font] = NSFont.systemFont(ofSize: 13 * scale)
+            measured = (badge as NSString).size(withAttributes: attributes)
+        }
+
+        let origin = NSPoint(
+            x: (size.width - measured.width) / 2,
+            y: (size.height - measured.height) / 2
+        )
+        (badge as NSString).draw(at: origin, withAttributes: attributes)
+
+        // A flag carries its own colours and must be drawn as-is. The text fallback must
+        // not: it is drawn in black, and a non-template black glyph is invisible against a
+        // dark menu bar. As a template, macOS tints it to match the bar in either theme.
+        image.isTemplate = !Self.isFlagEmoji(badge)
+        return image
+    }
+
+    /// Whether a badge is a flag, i.e. begins with a regional indicator symbol.
+    static func isFlagEmoji(_ badge: String) -> Bool {
+        guard let first = badge.unicodeScalars.first else { return false }
+        return (0x1F1E6...0x1F1FF).contains(first.value)
+    }
+
+    /// Menu-bar text for a layout this app does not correct: the country's flag, or the
+    /// language code when the language is outside the table, or "?" when the input source
+    /// declares no language at all.
+    static func badge(forOtherLayout tag: String?) -> String {
+        guard let tag = tag, !tag.isEmpty else { return "?" }
+        return LayoutFlag.emoji(forLanguageTag: tag) ?? LayoutFlag.fallbackLabel(forLanguageTag: tag)
     }
 
     /// British flag (simplified Union Jack) for menu bar
@@ -414,7 +473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         let currentLayout = NSMenuItem(
-            title: L("menu.currentLayout", Self.currentLayoutName),
+            title: L("menu.currentLayout", LayoutFlag.currentLayoutDisplayName),
             action: nil,
             keyEquivalent: ""
         )
@@ -518,7 +577,7 @@ extension AppDelegate: NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         enableMenuItem?.state = settings.isEnabled ? .on : .off
         if let layoutItem = menu.item(withTag: 100) {
-            layoutItem.title = L("menu.currentLayout", Self.currentLayoutName)
+            layoutItem.title = L("menu.currentLayout", LayoutFlag.currentLayoutDisplayName)
         }
         if let statsItem = menu.item(withTag: 101) {
             statsItem.title = L("menu.correctionsWithTotal", settings.sessionCorrections, settings.totalCorrections)

@@ -121,7 +121,7 @@ struct GeneralTab: View {
                 HStack {
                     Text(L("status.currentLayout"))
                     Spacer()
-                    Text(Self.currentLayoutName)
+                    Text(LayoutFlag.currentLayoutDisplayName)
                         .foregroundColor(.secondary)
                 }
 
@@ -138,9 +138,7 @@ struct GeneralTab: View {
         .formStyle(.grouped)
     }
 
-    private static var currentLayoutName: String {
-        InputSourceManager.currentLanguage()?.localizedName ?? L("language.other")
-    }
+
 }
 
 // MARK: - Hotkey Recorder

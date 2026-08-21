@@ -32,6 +32,15 @@ if let flagIndex = arguments.firstIndex(of: "--export-iconset") {
 // Support mode: report where the app found its resources, and exit.
 if arguments.contains("--print-diagnostics") {
     print(Localization.shared.diagnosticsReport())
+    print("\nCurrent layout: \(LayoutFlag.currentLayoutDisplayName)")
+    print("Enabled input sources:")
+    for source in InputSourceManager.enabledSourceSummaries() {
+        let tag = source.languageTag ?? "(none)"
+        let corrected = InputSourceManager.language(ofSourceID: source.id)?.rawValue
+        let badge = corrected.map { "drawn flag (\($0))" }
+            ?? AppDelegate.badge(forOtherLayout: source.languageTag)
+        print("  \(source.id)  lang=\(tag)  badge=\(badge)")
+    }
     print("Dictionaries: EN=\(DictionaryManager.shared.isEnglishWord("hello") ? "loaded" : "EMPTY")")
     exit(0)
 }

@@ -60,6 +60,23 @@ final class InputSourceManager {
         return nil
     }
 
+    /// The language of the current input source, as a BCP-47 tag ("pl", "de", "zh-Hans").
+    ///
+    /// Asked of TIS rather than parsed out of the source ID: the ID is a bundle-style name
+    /// that only sometimes contains the language ("com.apple.keylayout.Polish" does,
+    /// "com.apple.keylayout.ABC" does not), and third-party layouts follow no convention at
+    /// all. Every input source declares its languages.
+    static func currentSourceLanguageTag() -> String? {
+        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceLanguages),
+              let languages = Unmanaged<CFArray>.fromOpaque(ptr).takeUnretainedValue()
+                  as? [String]
+        else {
+            return nil
+        }
+        return languages.first
+    }
+
     /// Returns the current language if it's English or Ukrainian, nil otherwise
     static func currentLanguage() -> Language? {
         let sourceID = currentInputSourceID()
@@ -89,6 +106,20 @@ final class InputSourceManager {
         }
 
         print("[LayoutSwitcher] No enabled input source found for \(language.rawValue)")
+    }
+
+    /// Every enabled source with the language it declares — what `--print-diagnostics`
+    /// prints, so "my layout shows as XX" can be answered without guessing.
+    static func enabledSourceSummaries() -> [(id: String, languageTag: String?)] {
+        enabledSources().map { entry in
+            var tag: String?
+            if let ptr = TISGetInputSourceProperty(entry.source, kTISPropertyInputSourceLanguages),
+               let languages = Unmanaged<CFArray>.fromOpaque(ptr).takeUnretainedValue()
+                   as? [String] {
+                tag = languages.first
+            }
+            return (entry.id, tag)
+        }
     }
 
     /// Enabled (not merely installed) keyboard input sources, with their IDs.
