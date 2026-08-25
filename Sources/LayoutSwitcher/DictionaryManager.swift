@@ -11,12 +11,22 @@ final class DictionaryManager: WordSource {
     private var englishPrefixes: Set<String> = []
     private var ukrainianPrefixes: Set<String> = []
 
-    // Guards all four sets. Reads happen on the correction queue (bg thread);
-    // writes happen on the main thread (SettingsView import, launch init).
-    // Without the lock, Set mutation racing with membership check crashes.
-    private let lock = NSLock()
+    // Guards all four sets. Recursive because a full rebuild holds the lock across all of
+    // its phases and then reuses the same small mutation helpers. Readers therefore see
+    // either the old complete dictionary or the new complete dictionary, never a half-built
+    // mix of bundled and custom words.
+    private let lock = NSRecursiveLock()
 
-    private init() {
+    /// Orders every dictionary mutation. A rebuild is intentionally asynchronous because
+    /// parsing the bundled corpora should not hitch SwiftUI, while imports/additions use
+    /// `sync` so they cannot overtake an already queued rebuild and then be erased by it.
+    private let mutationQueue = DispatchQueue(
+        label: "com.layoutswitcher.dictionary-mutations",
+        qos: .userInitiated
+    )
+
+    /// Internal for isolated tests; production uses `shared`.
+    init() {
         loadBundledDictionaries()
     }
 
@@ -33,16 +43,38 @@ final class DictionaryManager: WordSource {
     /// Rebuild everything from the bundled lists plus the given customizations. The only
     /// way to *remove* a custom word or an imported file mid-session — the sets merge
     /// bundled and custom words, so removal means rebuilding from scratch.
-    func rebuild(
+    func rebuildAsync(
         customEnglishWords: [String],
         customUkrainianWords: [String],
         englishPaths: [String],
         ukrainianPaths: [String]
     ) {
+        mutationQueue.async { [weak self] in
+            self?.rebuildNow(
+                customEnglishWords: customEnglishWords,
+                customUkrainianWords: customUkrainianWords,
+                englishPaths: englishPaths,
+                ukrainianPaths: ukrainianPaths
+            )
+        }
+    }
+
+    private func rebuildNow(
+        customEnglishWords: [String],
+        customUkrainianWords: [String],
+        englishPaths: [String],
+        ukrainianPaths: [String]
+    ) {
+        // Keep the published sets atomic across the complete rebuild. NSRecursiveLock lets
+        // the helpers below take the same lock without deadlocking.
+        lock.lock(); defer { lock.unlock() }
         loadBundledDictionaries()
-        addCustomEnglishWords(customEnglishWords)
-        addCustomUkrainianWords(customUkrainianWords)
-        reloadCustomDictionaryFiles(englishPaths: englishPaths, ukrainianPaths: ukrainianPaths)
+        addCustomEnglishWordsNow(customEnglishWords)
+        addCustomUkrainianWordsNow(customUkrainianWords)
+        reloadCustomDictionaryFilesNow(
+            englishPaths: englishPaths,
+            ukrainianPaths: ukrainianPaths
+        )
     }
 
     private func loadBundledDictionaries() {
@@ -163,6 +195,12 @@ final class DictionaryManager: WordSource {
     /// Returns the number of words loaded.
     @discardableResult
     func loadDictionaryFile(url: URL, language: Language) -> Int {
+        mutationQueue.sync {
+            loadDictionaryFileNow(url: url, language: language)
+        }
+    }
+
+    private func loadDictionaryFileNow(url: URL, language: Language) -> Int {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             print("[LayoutSwitcher] ERROR: Could not read dictionary file: \(url.path)")
             return 0
@@ -197,18 +235,36 @@ final class DictionaryManager: WordSource {
 
     /// Reload all custom dictionary files from saved paths
     func reloadCustomDictionaryFiles(englishPaths: [String], ukrainianPaths: [String]) {
+        mutationQueue.sync {
+            reloadCustomDictionaryFilesNow(
+                englishPaths: englishPaths,
+                ukrainianPaths: ukrainianPaths
+            )
+        }
+    }
+
+    private func reloadCustomDictionaryFilesNow(
+        englishPaths: [String],
+        ukrainianPaths: [String]
+    ) {
         for path in englishPaths {
             let url = URL(fileURLWithPath: path)
-            loadDictionaryFile(url: url, language: .english)
+            _ = loadDictionaryFileNow(url: url, language: .english)
         }
         for path in ukrainianPaths {
             let url = URL(fileURLWithPath: path)
-            loadDictionaryFile(url: url, language: .ukrainian)
+            _ = loadDictionaryFileNow(url: url, language: .ukrainian)
         }
     }
 
     /// Add custom words
     func addCustomEnglishWords(_ words: [String]) {
+        mutationQueue.sync {
+            addCustomEnglishWordsNow(words)
+        }
+    }
+
+    private func addCustomEnglishWordsNow(_ words: [String]) {
         lock.lock(); defer { lock.unlock() }
         for word in words {
             let lower = word.lowercased()
@@ -220,6 +276,12 @@ final class DictionaryManager: WordSource {
     }
 
     func addCustomUkrainianWords(_ words: [String]) {
+        mutationQueue.sync {
+            addCustomUkrainianWordsNow(words)
+        }
+    }
+
+    private func addCustomUkrainianWordsNow(_ words: [String]) {
         lock.lock(); defer { lock.unlock() }
         for word in words {
             let lower = word.lowercased()

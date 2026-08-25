@@ -709,21 +709,19 @@ struct DictionaryTab: View {
     }
 
     /// Custom words merge into the same sets as the bundled lists, so removing one means
-    /// rebuilding the sets from scratch. Off the main thread — the bundled load is long
-    /// enough to hitch the UI.
+    /// rebuilding the sets from scratch. DictionaryManager serializes this with imports and
+    /// additions; otherwise an older background rebuild can erase a newer user change.
     private func rebuildDictionaries() {
         let enWords = settings.customEnglishWords
         let uaWords = settings.customUkrainianWords
         let enPaths = settings.customEnglishDictionaryPaths
         let uaPaths = settings.customUkrainianDictionaryPaths
-        DispatchQueue.global(qos: .userInitiated).async {
-            DictionaryManager.shared.rebuild(
-                customEnglishWords: enWords,
-                customUkrainianWords: uaWords,
-                englishPaths: enPaths,
-                ukrainianPaths: uaPaths
-            )
-        }
+        DictionaryManager.shared.rebuildAsync(
+            customEnglishWords: enWords,
+            customUkrainianWords: uaWords,
+            englishPaths: enPaths,
+            ukrainianPaths: uaPaths
+        )
     }
 }
 
