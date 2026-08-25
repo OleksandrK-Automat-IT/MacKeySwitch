@@ -20,6 +20,31 @@ final class DictionaryManager: WordSource {
         loadBundledDictionaries()
     }
 
+    /// One line of a word-list file → one lowercase word. Strips the UTF-8 BOM that
+    /// Windows editors prepend — `.whitespaces` does not cover U+FEFF, so the first word
+    /// of an imported file used to be stored as "\u{FEFF}word" and never matched.
+    private static func parseWordList(_ content: String) -> [String] {
+        content.replacingOccurrences(of: "\u{FEFF}", with: "")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Rebuild everything from the bundled lists plus the given customizations. The only
+    /// way to *remove* a custom word or an imported file mid-session — the sets merge
+    /// bundled and custom words, so removal means rebuilding from scratch.
+    func rebuild(
+        customEnglishWords: [String],
+        customUkrainianWords: [String],
+        englishPaths: [String],
+        ukrainianPaths: [String]
+    ) {
+        loadBundledDictionaries()
+        addCustomEnglishWords(customEnglishWords)
+        addCustomUkrainianWords(customUkrainianWords)
+        reloadCustomDictionaryFiles(englishPaths: englishPaths, ukrainianPaths: ukrainianPaths)
+    }
+
     private func loadBundledDictionaries() {
         let start = CFAbsoluteTimeGetCurrent()
 
@@ -30,9 +55,7 @@ final class DictionaryManager: WordSource {
 
         if let enURL = findResource("en_words", ext: "txt"),
            let enContent = try? String(contentsOf: enURL, encoding: .utf8) {
-            let words = enContent.components(separatedBy: .newlines)
-                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-                .filter { !$0.isEmpty }
+            let words = Self.parseWordList(enContent)
             enSet = Set(words)
             enPrefix = Set(words.compactMap { word in
                 word.count >= 3 ? String(word.prefix(3)) : nil
@@ -41,9 +64,7 @@ final class DictionaryManager: WordSource {
 
         if let uaURL = findResource("ua_words", ext: "txt"),
            let uaContent = try? String(contentsOf: uaURL, encoding: .utf8) {
-            let words = uaContent.components(separatedBy: .newlines)
-                .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-                .filter { !$0.isEmpty }
+            let words = Self.parseWordList(uaContent)
             uaSet = Set(words)
             uaPrefix = Set(words.compactMap { word in
                 word.count >= 3 ? String(word.prefix(3)) : nil
@@ -147,9 +168,7 @@ final class DictionaryManager: WordSource {
             return 0
         }
 
-        let words = content.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty }
+        let words = Self.parseWordList(content)
 
         lock.lock()
         switch language {

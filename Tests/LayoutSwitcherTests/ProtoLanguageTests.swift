@@ -57,4 +57,27 @@ import Testing
         #expect(ProtoLanguage.couldBe("hello", language: .english))
         #expect(ProtoLanguage.couldBe("привіт", language: .ukrainian))
     }
+
+    /// Words the 50k corpus does not contain, so the corpus test cannot defend them —
+    /// each of these once carried a listed "impossible" bigram and pushed correct typing
+    /// toward being rewritten.
+    @Test(arguments: ["досьє", "ательє", "портьє", "шафка", "розщеплення", "безщасний"])
+    func realUkrainianWordsAreNotFlaggedAsImpossible(word: String) {
+        #expect(!ProtoLanguage.hasImpossibleUkrainianBigram(word))
+    }
+
+    @Test(arguments: ["zigzag", "rendezvous"])
+    func rareButRealEnglishWordsAreNotFlaggedAsImpossible(word: String) {
+        #expect(!ProtoLanguage.hasImpossibleEnglishBigram(word))
+    }
+
+    /// The apostrophe is Ukrainian orthography, not a foreign character: м'ясо and ім'я
+    /// must reach the system dictionary. A run of apostrophes alone is still not Ukrainian.
+    @Test func apostrophizedUkrainianWordsPassTheScriptCheck() {
+        #expect(ProtoLanguage.usesScript("м'ясо", of: .ukrainian))
+        #expect(ProtoLanguage.usesScript("ім\u{2019}я", of: .ukrainian))
+        #expect(ProtoLanguage.usesScript("комп'ютер", of: .ukrainian))
+        #expect(!ProtoLanguage.usesScript("''", of: .ukrainian))
+        #expect(!ProtoLanguage.usesScript("м'yaso", of: .ukrainian))
+    }
 }

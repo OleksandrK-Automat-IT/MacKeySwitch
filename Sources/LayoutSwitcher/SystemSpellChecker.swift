@@ -26,7 +26,13 @@ final class SystemSpellChecker {
     private static let maxCacheEntries = 20_000
 
     private init() {
-        availableLanguages = Set(NSSpellChecker.shared.availableLanguages)
+        // NSSpellChecker belongs to AppKit's main thread, and `shared`'s first touch
+        // decides which thread constructs it — hop if that happens to be a background one.
+        if Thread.isMainThread {
+            availableLanguages = Set(NSSpellChecker.shared.availableLanguages)
+        } else {
+            availableLanguages = DispatchQueue.main.sync { Set(NSSpellChecker.shared.availableLanguages) }
+        }
         let installed = Language.allCases.filter { languageCode(for: $0) != nil }
         print("[LayoutSwitcher] System dictionaries available: "
               + (installed.map(\.rawValue).joined(separator: ", ").isEmpty

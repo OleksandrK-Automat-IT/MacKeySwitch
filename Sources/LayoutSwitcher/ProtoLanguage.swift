@@ -18,11 +18,13 @@ struct ProtoLanguage {
 
     /// Two-character sequences that never occur in English words.
     /// Almost all involve q, j, x, z or v followed by another consonant.
+    /// Removed by hand despite passing the corpus test: "gz" (zigzag),
+    /// "zv" (rendezvous) — real words the 50k list happens not to contain.
     static let englishImpossibleBigrams: Set<String> = [
-        "bq", "cj", "cx", "fq", "gq", "gx", "gz", "hx", "jb", "jf", "jk", "jq",
+        "bq", "cj", "cx", "fq", "gq", "gx", "hx", "jb", "jf", "jk", "jq",
         "jv", "jx", "jz", "kj", "kq", "kx", "kz", "mq", "pz", "qb", "qc", "qf",
         "qg", "qj", "qk", "qx", "qz", "sx", "tq", "vf", "vj", "vk", "vm", "vq",
-        "vx", "wq", "wx", "xj", "xk", "xn", "xq", "xz", "zf", "zk", "zq", "zv",
+        "vx", "wq", "wx", "xj", "xk", "xn", "xq", "xz", "zf", "zk", "zq",
         "zx",
     ]
 
@@ -41,15 +43,18 @@ struct ProtoLanguage {
         // щ followed by another consonant.
         "щб", "щг", "щд", "щж", "щз", "щк", "щл", "щм", "щп", "щр", "щс", "щт",
         "щф", "щх", "щц", "щч", "щш", "щщ", "щґ",
-        // ь followed by a vowel other than о, and doubled ь.
-        "ьа", "ье", "ьи", "ьу", "ьі", "ьє", "ьї", "ьґ", "ьь",
+        // ь followed by a vowel other than о, and doubled ь. "ьє" is NOT here:
+        // it occurs in loanwords (досьє, ательє, портьє, круп'є).
+        "ьа", "ье", "ьи", "ьу", "ьі", "ьї", "ьґ", "ьь",
         // ґ is rare and combines with almost no consonant.
         "ґб", "ґг", "ґд", "ґж", "ґк", "ґм", "ґп", "ґс", "ґт", "ґф", "ґх", "ґц",
         "ґч", "ґш", "ґщ",
-        // ф is rare in native words and does not cluster with these.
-        "фд", "фж", "фз", "фк", "фм", "фп", "фх", "фц", "фш", "фщ", "фґ", "гф",
-        // ж and з clusters that do not occur.
-        "жп", "жт", "жф", "жх", "жш", "жщ", "зщ",
+        // ф is rare in native words and does not cluster with these. "фк" is NOT
+        // here: it occurs in diminutives (шафка).
+        "фд", "фж", "фз", "фм", "фп", "фх", "фц", "фш", "фщ", "фґ", "гф",
+        // ж and з clusters that do not occur. "зщ" is NOT here: it occurs across
+        // the prefix boundary (розщеплення, безщасний).
+        "жп", "жт", "жф", "жх", "жш", "жщ",
         // Doubled consonants that never occur.
         "хх",
     ]
@@ -106,10 +111,21 @@ struct ProtoLanguage {
         case .english:
             return lower.allSatisfy { $0.isASCII && $0.isLetter }
         case .ukrainian:
-            return lower.allSatisfy { char in
+            // The apostrophe is part of Ukrainian orthography (м'ясо, ім'я, комп'ютер) —
+            // typewriter ', right quote ', and modifier letter ʼ all occur in real text.
+            // Requiring pure Cyrillic here made every apostrophized word invisible to the
+            // system dictionary. At least one Cyrillic letter is still required, so a
+            // bare apostrophe run cannot pass as Ukrainian.
+            var hasCyrillic = false
+            for char in lower {
                 guard let scalar = char.unicodeScalars.first else { return false }
-                return (0x0400...0x04FF).contains(scalar.value)
+                if (0x0400...0x04FF).contains(scalar.value) {
+                    hasCyrillic = true
+                } else if scalar.value != 0x27 && scalar.value != 0x2019 && scalar.value != 0x02BC {
+                    return false
+                }
             }
+            return hasCyrillic
         }
     }
 

@@ -20,8 +20,18 @@ struct PasswordHeuristic {
     /// Minimum length before a mixed-character run is treated as a password.
     static let minimumLength = 6
 
-    /// Feed one printable keystroke: a letter key or a number-row key.
-    mutating func record(keycode: UInt16, isShifted: Bool) {
+    /// Punctuation keys that are not letters on either layout: - = \ / (`_ + | ?` shifted).
+    /// They always print a symbol, so they carry the same signal as a shifted digit.
+    private static let symbolKeycodes: Set<UInt16> = [0x1B, 0x18, 0x2A, 0x2C]
+
+    /// Feed one printable keystroke: a letter key, a number-row key, or a symbol key.
+    mutating func record(keycode: UInt16, isShifted: Bool, capsLock: Bool = false) {
+        if Self.symbolKeycodes.contains(keycode) {
+            printableCount += 1
+            hasSymbol = true
+            return
+        }
+
         guard KeyMapping.isLetterKey(keycode) || KeyMapping.numberRowKeycodes.contains(keycode)
         else { return }
 
@@ -36,7 +46,9 @@ struct PasswordHeuristic {
             return
         }
 
-        if isShifted {
+        // Caps Lock uppercases letters too — and combined with Shift it types lowercase,
+        // hence XOR. Without this, a caps-lock password never registered mixed case.
+        if isShifted != capsLock {
             hasUpperCase = true
         } else {
             hasLowerCase = true

@@ -30,6 +30,15 @@ import AppKit
         #expect(HotkeyBinding.disabled.description != HotkeyBinding.keyCodeLabel(0))
     }
 
+    /// Keycode 0 is the letter 'A', not a sentinel: recording ⌃⌥A used to store keyCode 0
+    /// and read back as "disabled". The marker is -1 now, so an 'A' binding must register.
+    @Test func aBindingOnTheLetterAIsEnabled() {
+        let controlOption = NSEvent.ModifierFlags([.control, .option]).rawValue
+        let binding = HotkeyBinding(keyCode: 0, modifiers: controlOption)
+        #expect(binding.isEnabled)
+        #expect(binding.description == "\u{2303}\u{2325}A")
+    }
+
     @Test func theDefaultBindingReadsAsControlShiftZ() {
         let binding = HotkeyBinding(
             keyCode: 0x06,

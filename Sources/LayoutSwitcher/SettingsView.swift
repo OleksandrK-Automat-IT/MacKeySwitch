@@ -545,6 +545,7 @@ struct DictionaryTab: View {
                         }
                         .onDelete { indexSet in
                             settings.customEnglishWords.remove(atOffsets: indexSet)
+                            rebuildDictionaries()
                         }
                     }
                     .listStyle(.bordered)
@@ -575,6 +576,7 @@ struct DictionaryTab: View {
                         }
                         .onDelete { indexSet in
                             settings.customUkrainianWords.remove(atOffsets: indexSet)
+                            rebuildDictionaries()
                         }
                     }
                     .listStyle(.bordered)
@@ -611,6 +613,7 @@ struct DictionaryTab: View {
                             Spacer()
                             Button(role: .destructive) {
                                 settings.customEnglishDictionaryPaths.removeAll { $0 == path }
+                                rebuildDictionaries()
                             } label: {
                                 Image(systemName: "xmark.circle")
                                     .foregroundColor(.red)
@@ -626,6 +629,7 @@ struct DictionaryTab: View {
                             Spacer()
                             Button(role: .destructive) {
                                 settings.customUkrainianDictionaryPaths.removeAll { $0 == path }
+                                rebuildDictionaries()
                             } label: {
                                 Image(systemName: "xmark.circle")
                                     .foregroundColor(.red)
@@ -690,6 +694,9 @@ struct DictionaryTab: View {
         let word = newEnglishWord.trimmingCharacters(in: .whitespaces).lowercased()
         guard !word.isEmpty, !settings.customEnglishWords.contains(word) else { return }
         settings.customEnglishWords.append(word)
+        // Persisting alone is not enough: the detector consults DictionaryManager,
+        // which reads these arrays only at launch. Push the word in live too.
+        DictionaryManager.shared.addCustomEnglishWords([word])
         newEnglishWord = ""
     }
 
@@ -697,7 +704,26 @@ struct DictionaryTab: View {
         let word = newUkrainianWord.trimmingCharacters(in: .whitespaces).lowercased()
         guard !word.isEmpty, !settings.customUkrainianWords.contains(word) else { return }
         settings.customUkrainianWords.append(word)
+        DictionaryManager.shared.addCustomUkrainianWords([word])
         newUkrainianWord = ""
+    }
+
+    /// Custom words merge into the same sets as the bundled lists, so removing one means
+    /// rebuilding the sets from scratch. Off the main thread — the bundled load is long
+    /// enough to hitch the UI.
+    private func rebuildDictionaries() {
+        let enWords = settings.customEnglishWords
+        let uaWords = settings.customUkrainianWords
+        let enPaths = settings.customEnglishDictionaryPaths
+        let uaPaths = settings.customUkrainianDictionaryPaths
+        DispatchQueue.global(qos: .userInitiated).async {
+            DictionaryManager.shared.rebuild(
+                customEnglishWords: enWords,
+                customUkrainianWords: uaWords,
+                englishPaths: enPaths,
+                ukrainianPaths: uaPaths
+            )
+        }
     }
 }
 
@@ -1048,7 +1074,7 @@ struct AboutTab: View {
     /// Read from the bundle rather than typed in, so it cannot disagree with the version
     /// the installer stamps into Info.plist.
     private var version: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "2.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
 
     var body: some View {

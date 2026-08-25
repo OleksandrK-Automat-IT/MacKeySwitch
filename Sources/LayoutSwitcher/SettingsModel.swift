@@ -15,11 +15,12 @@ struct HotkeyBinding: Equatable {
     /// Raw bitmask of NSEvent.ModifierFlags (already & .deviceIndependentFlagsMask).
     var modifiers: UInt
 
-    static let disabled = HotkeyBinding(keyCode: 0, modifiers: 0)
+    static let disabled = HotkeyBinding(keyCode: -1, modifiers: 0)
 
-    /// Keycode 0 is 'A', which is never a usable global shortcut on its own, so it doubles
-    /// as the "no shortcut" marker.
-    var isEnabled: Bool { keyCode != 0 }
+    /// -1 marks "no shortcut". Keycode 0 used to double as the marker, but 0 is the
+    /// letter 'A' — recording ⌃⌥A stored keyCode 0 and the binding silently read back
+    /// as disabled. Stored legacy zeros are migrated to -1 on load.
+    var isEnabled: Bool { keyCode >= 0 }
 
     /// Human-readable hotkey: e.g. "⌃⇧Z"
     var description: String {
@@ -266,7 +267,10 @@ final class SettingsModel: ObservableObject {
 
         self.totalCorrections = defaults.object(forKey: "totalCorrections") as? Int ?? 0
 
-        let keyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? 0x06 // 'Z'
+        let storedKeyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? 0x06 // 'Z'
+        // Migrate the legacy "disabled" marker: 0 used to mean "no shortcut" (see
+        // HotkeyBinding.isEnabled), so a stored 0 is a cleared binding, never the 'A' key.
+        let keyCode = storedKeyCode == 0 ? -1 : storedKeyCode
         let storedMods = defaults.object(forKey: "undoHotkeyModifiers") as? Int
         let modifiers = storedMods.map { UInt(bitPattern: $0) }
             ?? NSEvent.ModifierFlags([.control, .shift]).rawValue

@@ -43,6 +43,28 @@ import Testing
         #expect(!heuristic(after: "Ab1").looksLikePassword)
     }
 
+    /// Uppercase used to be inferred from Shift alone, so a caps-lock password never
+    /// registered mixed case and slipped past the heuristic into auto-correction.
+    @Test func capsLockCountsAsUppercase() {
+        var heuristic = PasswordHeuristic()
+        for stroke in keycodes(forTyping: "passw", capsLock: true) {
+            heuristic.record(keycode: stroke.keycode, isShifted: stroke.shift, capsLock: stroke.capsLock)
+        }
+        // Shift+letter under caps lock types lowercase (macOS convention) — XOR.
+        heuristic.record(keycode: 0x00, isShifted: true, capsLock: true) // 'a'
+        heuristic.record(keycode: 0x12, isShifted: false, capsLock: true) // '1'
+        #expect(heuristic.looksLikePassword)
+    }
+
+    /// Symbols from the punctuation keys (- = \ /) used to be dropped by the letter/digit
+    /// guard, so "Secret_word" never set the symbol flag.
+    @Test func punctuationKeySymbolsCount() {
+        var heuristic = heuristic(after: "Secret")
+        heuristic.record(keycode: 0x1B, isShifted: true) // shift+minus = '_'
+        #expect(heuristic.looksLikePassword)
+        #expect(heuristic.printableCount == 7)
+    }
+
     @Test func digitsCountTowardLengthEvenThoughTheyAreNotBuffered() {
         // The bug this guards: length used to be counted from the letter buffer, which
         // digits never enter, so a password like "Ab12cd" measured as 4 characters.
