@@ -130,7 +130,7 @@ struct KeyMapping {
 
     /// The keys this map covers, and the only ones that ever enter the reconstruction
     /// buffer. Exposed so the layout can be asked which of them are dead keys — see
-    /// `InputSourceManager.deadKeycodes()`.
+    /// `InputSourceManager.deadKeyProfile()`.
     static let bufferedKeycodes: Set<UInt16> = [
         0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x10, 0x20, 0x22, 0x1F, 0x23, // qwertyuiop
         0x00, 0x01, 0x02, 0x03, 0x05, 0x04, 0x26, 0x28, 0x25,       // asdfghjkl

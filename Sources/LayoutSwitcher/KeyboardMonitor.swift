@@ -82,10 +82,15 @@ final class KeyboardMonitor {
     private var cachedLayout: Language?
     private var cachedFrontmostBundleID: String?
 
-    /// Keys that type nothing on the current layout because they are dead keys. Cached
-    /// alongside the layout, and refreshed with it — resolving them costs a UCKeyTranslate
-    /// per buffered key, which is far too much for an event-tap callback.
-    private var cachedDeadKeycodes: Set<UInt16> = []
+    /// What the current layout's dead keys do. Cached alongside the layout, and refreshed
+    /// with it — probing costs a UCKeyTranslate per buffered key, which is far too much for
+    /// an event-tap callback.
+    private var cachedDeadKeys = InputSourceManager.DeadKeyProfile()
+
+    /// The last buffered key was a dead key, so it has put nothing on screen yet. The
+    /// boundary space will resolve it into one character and be consumed doing so, which
+    /// is why the correction must not count a trailing space it can see on screen.
+    private var bufferEndsWithDeadKey = false
 
     // Max buffer length — prevents unbounded growth in long URL/password fields
     private let maxBufferLength = 64
@@ -135,7 +140,7 @@ final class KeyboardMonitor {
 
         // Seed the caches the tap callback reads. From here on they are notification-driven.
         cachedLayout = InputSourceManager.currentLanguage()
-        cachedDeadKeycodes = InputSourceManager.deadKeycodes()
+        cachedDeadKeys = InputSourceManager.deadKeyProfile()
         cachedFrontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
         // Mouse clicks move the caret without producing a keystroke, which would leave the
@@ -204,7 +209,7 @@ final class KeyboardMonitor {
     /// from the user rather than from this app, suppresses the next word's correction.
     func layoutDidChange() {
         cachedLayout = InputSourceManager.currentLanguage()
-        cachedDeadKeycodes = InputSourceManager.deadKeycodes()
+        cachedDeadKeys = InputSourceManager.deadKeyProfile()
 
         let selfSwitchedRecently = lastSelfSwitchTime.map {
             Date().timeIntervalSince($0) < Self.selfSwitchGrace
@@ -294,6 +299,14 @@ final class KeyboardMonitor {
         if keycode == KeyMapping.backspaceKeycode {
             handleBackspaceAfterCorrection()
 
+            // Backspacing over a pending dead key cancels it rather than deleting a
+            // character, so the buffer and the screen no longer agree on the count.
+            if bufferEndsWithDeadKey {
+                invalidateBuffer()
+                passwordHeuristic.removeLast()
+                return
+            }
+
             // Shrink buffer
             if !keyBuffer.isEmpty {
                 keyBuffer.removeLast()
@@ -318,7 +331,9 @@ final class KeyboardMonitor {
         // Word boundary — perform correction here (never mid-word)
         if KeyMapping.wordBoundaryKeycodes.contains(keycode) {
             if KeyMapping.correctionTriggerKeycodes.contains(keycode) {
-                maybeCorrect(currentLanguage: currentLang)
+                // A pending dead key spends this space resolving itself, so no space
+                // reaches the screen and the correction must not count one.
+                maybeCorrect(currentLanguage: currentLang, boundaryReachedScreen: !bufferEndsWithDeadKey)
             }
             resetBuffer()
             return
@@ -340,14 +355,28 @@ final class KeyboardMonitor {
         //
         // Emptying is not the same as resetting: the password heuristic keeps running,
         // because "Ab12cd" is one run of keystrokes even though the digits never buffer.
-        //   * a dead key prints nothing at all until the next keystroke resolves it, and
-        //     on US International the resolving keystroke is often the very space that
-        //     triggers the correction ("'" then space types just "'"). Counting it as one
-        //     character made the correction delete one too many and eat the space in front
-        //     of the word: "restoring показує" came out "restoringпоказує".
-        guard KeyMapping.isLetterKey(keycode), !cachedDeadKeycodes.contains(keycode) else {
+        guard KeyMapping.isLetterKey(keycode) else {
             invalidateBuffer()
             return
+        }
+
+        // A dead key prints nothing until the next keystroke resolves it, and what the two
+        // then produce is not something the static map can predict: on US International
+        // "'" + "e" is one character (é), "'" + "'" is one ('), "'" + "." is two ('.).
+        // Only one case stays reconstructable — the dead key ending the word, resolved by
+        // the boundary space into exactly the character the map claims (verified per
+        // layout in `deadKeyProfile`). Then the word on screen is intact and only the
+        // space is missing, which `boundaryReachedScreen` tells the correction about.
+        if bufferEndsWithDeadKey {
+            invalidateBuffer()
+            return
+        }
+        if cachedDeadKeys.dead.contains(keycode) {
+            guard cachedDeadKeys.resolvedByBoundary.contains(keycode) else {
+                invalidateBuffer()
+                return
+            }
+            bufferEndsWithDeadKey = true
         }
 
         // Track layout at word start. The manual-switch suppression is consumed here —
@@ -412,7 +441,10 @@ final class KeyboardMonitor {
     }
 
     /// Decide whether the just-finished word should be retyped in the other layout.
-    private func maybeCorrect(currentLanguage: Language) {
+    ///
+    /// `boundaryReachedScreen` is false when the triggering space was spent resolving a
+    /// pending dead key instead of printing: there is no space behind the caret to erase.
+    private func maybeCorrect(currentLanguage: Language, boundaryReachedScreen: Bool) {
         if skipCurrentWordCorrection {
             debugLog("[LayoutSwitcher] Skipped correction for this word (manual layout switch)")
             return
@@ -454,10 +486,14 @@ final class KeyboardMonitor {
         _userTypedDuringCorrection = false
         stateLock.unlock()
 
+        // The word, plus the trailing space when one actually reached the screen.
+        let deleteCount = originalText.count + (boundaryReachedScreen ? 1 : 0)
+
         correctionQueue.async { [weak self] in
             self?.performCorrection(
                 correctText: correctText,
                 originalText: originalText,
+                deleteCount: deleteCount,
                 from: layout,
                 to: intended,
                 delayMs: delayMs,
@@ -471,6 +507,7 @@ final class KeyboardMonitor {
     private func performCorrection(
         correctText: String,
         originalText: String,
+        deleteCount: Int,
         from: Language,
         to: Language,
         delayMs: Int,
@@ -508,9 +545,11 @@ final class KeyboardMonitor {
         // "pfd;завжди" behind.
         //
         // The count is exact: every buffered keystroke produces exactly one character in
-        // either layout (asserted in KeyMappingTests), plus one for the trailing space.
+        // either layout (asserted in KeyMappingTests), plus one for the trailing space —
+        // except when a dead key ended the word and spent that space resolving itself, in
+        // which case no space reached the screen and `deleteCount` already excludes it.
         // Keys that print without buffering empty the buffer instead — see handleEvent.
-        deleteBackward(characters: originalText.count + 1)
+        deleteBackward(characters: deleteCount)
 
         usleep(delayUs)
 
@@ -633,6 +672,7 @@ final class KeyboardMonitor {
         keyBuffer.removeAll()
         wordStartLayout = nil
         skipCurrentWordCorrection = false
+        bufferEndsWithDeadKey = false
         passwordHeuristic.reset()
     }
 
@@ -642,6 +682,7 @@ final class KeyboardMonitor {
     private func invalidateBuffer() {
         keyBuffer.removeAll()
         wordStartLayout = nil
+        bufferEndsWithDeadKey = false
     }
 
     /// Post an event, stamped so the tap callback can tell it apart from real typing.

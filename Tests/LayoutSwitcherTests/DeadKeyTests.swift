@@ -6,18 +6,22 @@ import Carbon
 /// every buffered keystroke has to have put exactly one character on screen. `KeyMapping`
 /// is a static table and cannot know that: which keys are dead is a property of the
 /// layout. On US International `'` and `` ` `` type nothing until the next keystroke
-/// resolves them — and the resolving keystroke is usually the very space that triggers the
-/// correction, so `'` + space types just `'`, no space.
+/// resolves them.
 ///
-/// Counting that key as one character made the correction delete one more character than
+/// Counting a dead key as one character made the correction delete one character more than
 /// existed, eating the space in front of the word: typing "куіещкштп gjrfpe'" produced
 /// "restoringпоказує" instead of "restoring показує".
-/// `@MainActor` because the TIS calls below are main-thread-only, and the testing library
-/// runs tests in parallel on background threads.
+///
+/// `@MainActor` because the TIS calls are main-thread-only and the testing library runs
+/// tests in parallel on background threads.
 @Suite @MainActor struct DeadKeyTests {
 
-    /// Resolve a layout by ID the way `InputSourceManager.deadKeycodes` resolves the
-    /// current one, so the test exercises the real UCKeyTranslate path.
+    private static let quote: UInt16 = 0x27
+    private static let backtick: UInt16 = 0x32
+    private static let space: UInt16 = 0x31
+
+    /// Resolve a layout by ID, so the test can examine a layout other than whichever one
+    /// the machine running the suite happens to have selected.
     private func layoutData(forSourceID sourceID: String) -> Data? {
         guard let list = TISCreateInputSourceList(nil, true)?.takeRetainedValue()
                 as? [TISInputSource] else { return nil }
@@ -34,58 +38,94 @@ import Carbon
         return nil
     }
 
-    /// How many characters one key puts on screen for a given layout: 0 for a dead key.
-    private func producedCharacterCount(_ data: Data, keycode: UInt16) -> Int {
-        var deadKeyState: UInt32 = 0
-        var characters = [UniChar](repeating: 0, count: 8)
-        var length = 0
-        let status = data.withUnsafeBytes { pointer -> OSStatus in
-            guard let base = pointer.baseAddress else { return OSStatus(paramErr) }
-            return UCKeyTranslate(
-                base.assumingMemoryBound(to: UCKeyboardLayout.self),
-                keycode, UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
-                0, &deadKeyState, characters.count, &length, &characters
-            )
+    /// What a run of keystrokes actually puts on screen, dead-key state carried forward
+    /// exactly as the text system carries it.
+    private func screenText(_ keycodes: [UInt16], on data: Data) -> String {
+        var state: UInt32 = 0
+        var text = ""
+        for keycode in keycodes {
+            text += InputSourceManager.translate(keycode, layoutData: data, deadKeyState: &state) ?? ""
         }
-        return status == noErr ? length : -1
+        return text
     }
 
-    @Test func theQuoteKeyIsDeadOnUSInternationalButNotOnUS() throws {
-        guard let international = layoutData(forSourceID: "com.apple.keylayout.USInternational-PC"),
-              let plainUS = layoutData(forSourceID: "com.apple.keylayout.US") else {
-            // Neither layout is installed on this machine; nothing to assert.
-            return
-        }
-        let quote: UInt16 = 0x27
-        #expect(producedCharacterCount(international, keycode: quote) == 0,
-                "US International's quote key must be dead — that is the whole premise")
-        #expect(producedCharacterCount(plainUS, keycode: quote) == 1,
+    // MARK: - The layout facts the whole fix rests on
+
+    @Test func theQuoteKeyIsDeadOnUSInternationalButNotOnPlainUS() throws {
+        let international = try #require(layoutData(forSourceID: "com.apple.keylayout.USInternational-PC"))
+        let plainUS = try #require(layoutData(forSourceID: "com.apple.keylayout.US"))
+
+        var state: UInt32 = 0
+        #expect(InputSourceManager.translate(Self.quote, layoutData: international, deadKeyState: &state) == "",
+                "US International's quote key must type nothing — that is the whole premise")
+
+        state = 0
+        #expect(InputSourceManager.translate(Self.quote, layoutData: plainUS, deadKeyState: &state) == "'",
                 "plain US types an apostrophe outright, so it stays bufferable")
     }
 
-    /// Whatever the current layout is, every key the monitor buffers must put exactly one
-    /// character on screen once the dead ones are excluded. This is the invariant the
-    /// backspace count depends on.
-    @Test func everyBufferedKeyTypesExactlyOneCharacterOnTheCurrentLayout() throws {
+    /// The exact sequence from the bug report: the boundary space is spent resolving the
+    /// dead key, so the word is intact on screen but no space follows it.
+    @Test func theBoundarySpaceIsConsumedResolvingATrailingDeadKey() throws {
+        let data = try #require(layoutData(forSourceID: "com.apple.keylayout.USInternational-PC"))
+        // g j r f p e ' — "показує" typed on the wrong layout — then space.
+        let word: [UInt16] = [0x05, 0x26, 0x0F, 0x03, 0x23, 0x0E, Self.quote]
+        #expect(screenText(word, on: data) == "gjrfpe",
+                "the dead key has printed nothing yet")
+        #expect(screenText(word + [Self.space], on: data) == "gjrfpe'",
+                "the space resolves the quote and does not itself reach the screen")
+    }
+
+    @Test func aTrailingDeadKeyIsReportedAsBoundaryResolvable() throws {
+        let data = try #require(layoutData(forSourceID: "com.apple.keylayout.USInternational-PC"))
+        let profile = InputSourceManager.deadKeyProfile(layoutData: data)
+
+        #expect(profile.dead.contains(Self.quote))
+        #expect(profile.dead.contains(Self.backtick))
+        // Both resolve into exactly the character KeyMapping predicts, so a word ending in
+        // one is still reconstructable — only the trailing space is missing.
+        #expect(profile.resolvedByBoundary.contains(Self.quote))
+        #expect(profile.resolvedByBoundary.contains(Self.backtick))
+    }
+
+    @Test func plainUSHasNoDeadKeysAtAll() throws {
+        let data = try #require(layoutData(forSourceID: "com.apple.keylayout.US"))
+        let profile = InputSourceManager.deadKeyProfile(layoutData: data)
+        #expect(profile.dead.isEmpty)
+    }
+
+    /// Mid-word dead keys stay unreconstructable, which is why the monitor invalidates the
+    /// buffer as soon as a second key follows one.
+    @Test func aDeadKeyFollowedByALetterCollapsesIntoOneCharacter() throws {
+        let data = try #require(layoutData(forSourceID: "com.apple.keylayout.USInternational-PC"))
+        // ' + e is one character, not two — the count the buffer would claim is wrong.
+        #expect(screenText([Self.quote, 0x0E], on: data) == "é")
+        // ' + ' is also one.
+        #expect(screenText([Self.quote, Self.quote], on: data) == "'")
+    }
+
+    // MARK: - The invariant, on whatever layout the tester is running
+
+    @Test func everyBufferedKeyTypesExactlyOneCharacterOnceDeadOnesAreExcluded() throws {
         let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
         guard let dataPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
             return // an input method rather than a keyboard layout
         }
         let data = unsafeBitCast(dataPtr, to: CFData.self) as Data
-        let dead = InputSourceManager.deadKeycodes()
+        let profile = InputSourceManager.deadKeyProfile(layoutData: data)
 
-        for keycode in KeyMapping.bufferedKeycodes where !dead.contains(keycode) {
-            let produced = producedCharacterCount(data, keycode: keycode)
-            let detail = "keycode 0x\(String(keycode, radix: 16)) types \(produced) characters "
+        for keycode in KeyMapping.bufferedKeycodes where !profile.dead.contains(keycode) {
+            var state: UInt32 = 0
+            let produced = InputSourceManager.translate(keycode, layoutData: data, deadKeyState: &state)
+            let detail = "keycode 0x\(String(keycode, radix: 16)) types '\(produced ?? "?")' "
                 + "but is not reported dead — the backspace count would be wrong"
-            #expect(produced == 1 || produced == -1, Comment(rawValue: detail))
+            #expect(produced == nil || produced?.count == 1, Comment(rawValue: detail))
         }
     }
 
-    @Test func deadKeysAreReportedForTheCurrentLayout() {
-        // Not an assertion about which keys are dead — that depends on the tester's
-        // layout — but that the probe runs and returns only keys the monitor buffers.
-        let dead = InputSourceManager.deadKeycodes()
-        #expect(dead.isSubset(of: KeyMapping.bufferedKeycodes))
+    @Test func theProfileOnlyEverReportsKeysTheMonitorBuffers() {
+        let profile = InputSourceManager.deadKeyProfile()
+        #expect(profile.dead.isSubset(of: KeyMapping.bufferedKeycodes))
+        #expect(profile.resolvedByBoundary.isSubset(of: profile.dead))
     }
 }

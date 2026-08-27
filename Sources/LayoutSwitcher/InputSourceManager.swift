@@ -108,50 +108,88 @@ final class InputSourceManager {
         print("[LayoutSwitcher] No enabled input source found for \(language.rawValue)")
     }
 
-    /// Which of the buffered keys type nothing on the current layout because they are
-    /// dead keys, waiting to combine with whatever comes next.
+    /// What the current layout's dead keys do to the reconstruction buffer.
     ///
-    /// `KeyMapping` is a static table, so it claims every buffered key produces exactly
-    /// one character — the assumption the backspace count rests on. That is a property of
-    /// the *layout*, not of the keycode: on US International `'` and `` ` `` are dead keys
-    /// that print nothing and then swallow the following space to emit their own
-    /// character. Counting them as one character each made the correction delete one
-    /// character too many, eating the space in front of the word — "restoring показує"
-    /// came out as "restoringпоказує".
+    /// `KeyMapping` is a static table, so it claims every buffered key produces exactly one
+    /// character — the assumption the backspace count rests on. Whether that holds is a
+    /// property of the *layout*, not of the keycode: on US International `'` and `` ` ``
+    /// are dead keys that print nothing and wait to combine with whatever comes next.
+    struct DeadKeyProfile {
+        /// Keys that put no character on screen when pressed.
+        var dead: Set<UInt16> = []
+
+        /// The subset a following space resolves into exactly the one character
+        /// `KeyMapping` predicts. A word ending in one of these is still reconstructable —
+        /// only the trailing space is missing, because the space was spent resolving it.
+        var resolvedByBoundary: Set<UInt16> = []
+    }
+
+    /// Probe the current layout for dead keys.
     ///
     /// Asked of the layout rather than hardcoded: which keys are dead differs per layout,
     /// and third-party layouts follow no convention at all.
-    static func deadKeycodes() -> Set<UInt16> {
+    static func deadKeyProfile() -> DeadKeyProfile {
         let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
         guard let dataPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
             // Input methods (as opposed to keyboard layouts) expose no layout data. They
             // do not reconstruct reliably anyway; report nothing rather than guess.
-            return []
+            return DeadKeyProfile()
         }
-        let layoutData = unsafeBitCast(dataPtr, to: CFData.self) as Data
+        return deadKeyProfile(layoutData: unsafeBitCast(dataPtr, to: CFData.self) as Data)
+    }
 
-        var dead: Set<UInt16> = []
+    /// The probe itself, against a layout given explicitly — the seam the tests use to
+    /// check a layout other than whichever one the tester happens to be running.
+    static func deadKeyProfile(layoutData: Data) -> DeadKeyProfile {
+        var profile = DeadKeyProfile()
         for keycode in KeyMapping.bufferedKeycodes {
-            var deadKeyState: UInt32 = 0
-            var characters = [UniChar](repeating: 0, count: 8)
-            var length = 0
+            var state: UInt32 = 0
             // Deliberately *without* kUCKeyTranslateNoDeadKeysBit: the point is to observe
             // the dead-key behaviour, not to suppress it.
-            let status = layoutData.withUnsafeBytes { pointer -> OSStatus in
-                guard let base = pointer.baseAddress else { return OSStatus(paramErr) }
-                return UCKeyTranslate(
-                    base.assumingMemoryBound(to: UCKeyboardLayout.self),
-                    keycode, UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
-                    0, &deadKeyState, characters.count, &length, &characters
-                )
-            }
+            let pressed = translate(keycode, layoutData: layoutData, deadKeyState: &state)
             // A key that emits no character, or more than one, breaks the one-keystroke-
             // one-character invariant either way.
-            if status == noErr && length != 1 {
-                dead.insert(keycode)
+            guard let pressed, pressed.count != 1 else { continue }
+            profile.dead.insert(keycode)
+
+            // Does the boundary space resolve it into the character the static map claims?
+            // On US International `'` then space types `'` — the word survives intact and
+            // only the space is gone. A dead key that resolves into something else, or
+            // into several characters, cannot be reconstructed at all.
+            guard pressed.isEmpty,
+                  let expected = KeyMapping.unshifted[keycode].map({ String($0.en) }),
+                  let resolved = translate(spaceKeycode, layoutData: layoutData, deadKeyState: &state),
+                  resolved == expected else {
+                continue
             }
+            profile.resolvedByBoundary.insert(keycode)
         }
-        return dead
+        return profile
+    }
+
+    private static let spaceKeycode: UInt16 = 0x31
+
+    /// One keystroke through the layout, carrying the dead-key state forward the way the
+    /// text system does. Returns the characters it puts on screen — empty for a dead key.
+    static func translate(
+        _ keycode: UInt16,
+        layoutData: Data,
+        deadKeyState: inout UInt32
+    ) -> String? {
+        var characters = [UniChar](repeating: 0, count: 8)
+        var length = 0
+        var state = deadKeyState
+        let status = layoutData.withUnsafeBytes { pointer -> OSStatus in
+            guard let base = pointer.baseAddress else { return OSStatus(paramErr) }
+            return UCKeyTranslate(
+                base.assumingMemoryBound(to: UCKeyboardLayout.self),
+                keycode, UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
+                0, &state, characters.count, &length, &characters
+            )
+        }
+        guard status == noErr else { return nil }
+        deadKeyState = state
+        return String(utf16CodeUnits: characters, count: max(0, length))
     }
 
     /// Every enabled source with the language it declares — what `--print-diagnostics`

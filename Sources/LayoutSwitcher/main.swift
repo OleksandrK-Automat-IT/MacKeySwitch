@@ -44,16 +44,19 @@ if arguments.contains("--print-diagnostics") {
     // Dead keys break the one-keystroke-one-character rule the backspace count depends on,
     // so words containing them are left alone. Which keys they are is layout-specific
     // (US International's ' and `), and this is the way to see it without guessing.
-    let dead = InputSourceManager.deadKeycodes().sorted()
-    if dead.isEmpty {
+    let profile = InputSourceManager.deadKeyProfile()
+    if profile.dead.isEmpty {
         print("Dead keys on the current layout: none")
     } else {
-        let labels = dead.map { keycode -> String in
+        let labels = profile.dead.sorted().map { keycode -> String in
             let char = KeyMapping.unshifted[keycode].map { String($0.en) } ?? "?"
-            return "0x\(String(keycode, radix: 16)) (\(char))"
+            let note = profile.resolvedByBoundary.contains(keycode)
+                ? "corrected at the end of a word only"
+                : "never corrected"
+            return "0x\(String(keycode, radix: 16)) (\(char)) — \(note)"
         }
-        print("Dead keys on the current layout: \(labels.joined(separator: ", "))")
-        print("  Words containing these keys are not corrected — see README.")
+        print("Dead keys on the current layout:")
+        for label in labels { print("  \(label)") }
     }
     print("Dictionaries: EN=\(DictionaryManager.shared.isEnglishWord("hello") ? "loaded" : "EMPTY")")
     exit(0)

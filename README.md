@@ -108,17 +108,22 @@ moved focus.
 - Words in apps you exclude in Settings → Per-App Rules.
 - Words you have rejected before, by backspacing over a correction or pressing undo.
 - The first word after you switch layouts by hand.
-- Words containing a **dead key**. On US International `'` and `` ` `` type nothing until
-  the next keystroke resolves them, and the resolving keystroke is usually the space that
-  would trigger the correction — `'` then space types just `'`, no space. The correction
-  erases the old word by counting backspaces, and that count assumes one keystroke put one
-  character on screen, so a dead key made it delete one character too many and eat the
-  space in front of the word. Which keys are dead is a property of the layout, so the app
-  asks the layout: `--print-diagnostics` lists them.
+- Words with a **dead key** anywhere but the end. On US International `'` and `` ` `` type
+  nothing until the next keystroke resolves them, and what the pair then produces is not
+  something a static table can predict: `'` + `e` is one character (é), `'` + `'` is one
+  (`'`), `'` + `.` is two (`'.`). The correction erases the old word by counting
+  backspaces, so a keystroke that put a different number of characters on screen than the
+  table claims shreds the text around it.
 
-  On US International this costs the corrections for Ukrainian words containing **є** or
-  **ґ**, since those sit on the `'` and `` ` `` keys. Plain US, ABC and British are
-  unaffected — nothing on them is a dead key.
+  A dead key **ending** a word is the one case that survives, and it is the common one —
+  Ukrainian words ending in **є** or **ґ** (показує, працює) are typed on the `'` and
+  `` ` `` keys. The boundary space resolves the dead key into exactly the character the
+  table predicts, and is spent doing so, so the word on screen is intact and simply has no
+  space after it. The correction accounts for that and those words are corrected normally.
+
+  Which keys are dead, and which of them resolve cleanly, is a property of the layout, so
+  the app asks the layout rather than hardcoding anything: `--print-diagnostics` lists them
+  and says which are corrected. Plain US, ABC and British have no dead keys at all.
 
 ## Translating
 
