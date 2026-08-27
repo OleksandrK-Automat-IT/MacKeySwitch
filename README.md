@@ -108,6 +108,17 @@ moved focus.
 - Words in apps you exclude in Settings → Per-App Rules.
 - Words you have rejected before, by backspacing over a correction or pressing undo.
 - The first word after you switch layouts by hand.
+- Words containing a **dead key**. On US International `'` and `` ` `` type nothing until
+  the next keystroke resolves them, and the resolving keystroke is usually the space that
+  would trigger the correction — `'` then space types just `'`, no space. The correction
+  erases the old word by counting backspaces, and that count assumes one keystroke put one
+  character on screen, so a dead key made it delete one character too many and eat the
+  space in front of the word. Which keys are dead is a property of the layout, so the app
+  asks the layout: `--print-diagnostics` lists them.
+
+  On US International this costs the corrections for Ukrainian words containing **є** or
+  **ґ**, since those sit on the `'` and `` ` `` keys. Plain US, ABC and British are
+  unaffected — nothing on them is a dead key.
 
 ## Translating
 

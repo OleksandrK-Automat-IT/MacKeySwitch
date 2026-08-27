@@ -82,6 +82,11 @@ final class KeyboardMonitor {
     private var cachedLayout: Language?
     private var cachedFrontmostBundleID: String?
 
+    /// Keys that type nothing on the current layout because they are dead keys. Cached
+    /// alongside the layout, and refreshed with it — resolving them costs a UCKeyTranslate
+    /// per buffered key, which is far too much for an event-tap callback.
+    private var cachedDeadKeycodes: Set<UInt16> = []
+
     // Max buffer length — prevents unbounded growth in long URL/password fields
     private let maxBufferLength = 64
 
@@ -130,6 +135,7 @@ final class KeyboardMonitor {
 
         // Seed the caches the tap callback reads. From here on they are notification-driven.
         cachedLayout = InputSourceManager.currentLanguage()
+        cachedDeadKeycodes = InputSourceManager.deadKeycodes()
         cachedFrontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
         // Mouse clicks move the caret without producing a keystroke, which would leave the
@@ -198,6 +204,7 @@ final class KeyboardMonitor {
     /// from the user rather than from this app, suppresses the next word's correction.
     func layoutDidChange() {
         cachedLayout = InputSourceManager.currentLanguage()
+        cachedDeadKeycodes = InputSourceManager.deadKeycodes()
 
         let selfSwitchedRecently = lastSelfSwitchTime.map {
             Date().timeIntervalSince($0) < Self.selfSwitchGrace
@@ -333,7 +340,12 @@ final class KeyboardMonitor {
         //
         // Emptying is not the same as resetting: the password heuristic keeps running,
         // because "Ab12cd" is one run of keystrokes even though the digits never buffer.
-        guard KeyMapping.isLetterKey(keycode) else {
+        //   * a dead key prints nothing at all until the next keystroke resolves it, and
+        //     on US International the resolving keystroke is often the very space that
+        //     triggers the correction ("'" then space types just "'"). Counting it as one
+        //     character made the correction delete one too many and eat the space in front
+        //     of the word: "restoring показує" came out "restoringпоказує".
+        guard KeyMapping.isLetterKey(keycode), !cachedDeadKeycodes.contains(keycode) else {
             invalidateBuffer()
             return
         }

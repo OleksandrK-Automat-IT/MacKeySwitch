@@ -108,6 +108,52 @@ final class InputSourceManager {
         print("[LayoutSwitcher] No enabled input source found for \(language.rawValue)")
     }
 
+    /// Which of the buffered keys type nothing on the current layout because they are
+    /// dead keys, waiting to combine with whatever comes next.
+    ///
+    /// `KeyMapping` is a static table, so it claims every buffered key produces exactly
+    /// one character — the assumption the backspace count rests on. That is a property of
+    /// the *layout*, not of the keycode: on US International `'` and `` ` `` are dead keys
+    /// that print nothing and then swallow the following space to emit their own
+    /// character. Counting them as one character each made the correction delete one
+    /// character too many, eating the space in front of the word — "restoring показує"
+    /// came out as "restoringпоказує".
+    ///
+    /// Asked of the layout rather than hardcoded: which keys are dead differs per layout,
+    /// and third-party layouts follow no convention at all.
+    static func deadKeycodes() -> Set<UInt16> {
+        let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        guard let dataPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+            // Input methods (as opposed to keyboard layouts) expose no layout data. They
+            // do not reconstruct reliably anyway; report nothing rather than guess.
+            return []
+        }
+        let layoutData = unsafeBitCast(dataPtr, to: CFData.self) as Data
+
+        var dead: Set<UInt16> = []
+        for keycode in KeyMapping.bufferedKeycodes {
+            var deadKeyState: UInt32 = 0
+            var characters = [UniChar](repeating: 0, count: 8)
+            var length = 0
+            // Deliberately *without* kUCKeyTranslateNoDeadKeysBit: the point is to observe
+            // the dead-key behaviour, not to suppress it.
+            let status = layoutData.withUnsafeBytes { pointer -> OSStatus in
+                guard let base = pointer.baseAddress else { return OSStatus(paramErr) }
+                return UCKeyTranslate(
+                    base.assumingMemoryBound(to: UCKeyboardLayout.self),
+                    keycode, UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
+                    0, &deadKeyState, characters.count, &length, &characters
+                )
+            }
+            // A key that emits no character, or more than one, breaks the one-keystroke-
+            // one-character invariant either way.
+            if status == noErr && length != 1 {
+                dead.insert(keycode)
+            }
+        }
+        return dead
+    }
+
     /// Every enabled source with the language it declares — what `--print-diagnostics`
     /// prints, so "my layout shows as XX" can be answered without guessing.
     static func enabledSourceSummaries() -> [(id: String, languageTag: String?)] {

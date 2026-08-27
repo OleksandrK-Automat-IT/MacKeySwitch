@@ -128,15 +128,19 @@ struct KeyMapping {
         0x32: CharPair(en: "~", ua: "Ґ"),
     ]
 
+    /// The keys this map covers, and the only ones that ever enter the reconstruction
+    /// buffer. Exposed so the layout can be asked which of them are dead keys — see
+    /// `InputSourceManager.deadKeycodes()`.
+    static let bufferedKeycodes: Set<UInt16> = [
+        0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x10, 0x20, 0x22, 0x1F, 0x23, // qwertyuiop
+        0x00, 0x01, 0x02, 0x03, 0x05, 0x04, 0x26, 0x28, 0x25,       // asdfghjkl
+        0x06, 0x07, 0x08, 0x09, 0x0B, 0x2D, 0x2E,                     // zxcvbnm
+        0x21, 0x1E, 0x29, 0x27, 0x2B, 0x2F, 0x32,                     // brackets, punct mapped to UA letters
+    ]
+
     /// Returns true if the keycode is a letter key (not punctuation/number)
     static func isLetterKey(_ keycode: UInt16) -> Bool {
-        let letterKeycodes: Set<UInt16> = [
-            0x0C, 0x0D, 0x0E, 0x0F, 0x11, 0x10, 0x20, 0x22, 0x1F, 0x23, // qwertyuiop
-            0x00, 0x01, 0x02, 0x03, 0x05, 0x04, 0x26, 0x28, 0x25,       // asdfghjkl
-            0x06, 0x07, 0x08, 0x09, 0x0B, 0x2D, 0x2E,                     // zxcvbnm
-            0x21, 0x1E, 0x29, 0x27, 0x2B, 0x2F, 0x32,                     // brackets, punct mapped to UA letters
-        ]
-        return letterKeycodes.contains(keycode)
+        bufferedKeycodes.contains(keycode)
     }
 
     /// Number-row keycodes. These are deliberately absent from `isLetterKey` — they are
