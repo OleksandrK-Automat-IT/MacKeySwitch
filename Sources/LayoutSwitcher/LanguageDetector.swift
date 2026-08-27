@@ -117,6 +117,25 @@ struct LanguageDetector {
         debugLog("[LayoutSwitcher] '\(currentText)' -> '\(targetText)': score \(score) "
                  + "vs threshold \(threshold) \(evidence)")
 
+        // A rewrite needs positive proof that the other layout was intended: the other
+        // reading has to be a real word. The supporting signals cannot supply that on
+        // their own — `currentPrefixInvalid` and friends only say "no dictionary knows
+        // this", which is equally true of names, brands, slang, inflected forms and
+        // anything outside the 50k lists. Scoring alone let that reach the threshold at
+        // the two most aggressive settings (a bare `currentPrefixInvalid` scores 2, the
+        // Very High threshold exactly), so correctly typed words the dictionaries did not
+        // happen to contain — "київ", "компютер" — were silently replaced with gibberish.
+        //
+        // The two failure modes are not symmetric: missing a correction is a nuisance,
+        // rewriting correct input destroys it. Without a dictionary hit there is nothing
+        // to distinguish the two, so the tie goes to leaving the text alone.
+        guard evidence.targetIsWord else { return nil }
+
+        // What the user typed is itself a real word — correct at best, ambiguous at worst.
+        // The -25 weight already makes this unreachable; stating it as a gate keeps a
+        // future re-tuning of the weights from quietly turning the veto back into a vote.
+        guard !evidence.currentIsWord else { return nil }
+
         return score >= threshold ? target : nil
     }
 }

@@ -77,9 +77,20 @@ chosen by the Sensitivity setting:
 | The other-layout reading starts like some word in the target dictionary | +2 |
 | What you typed starts like no word in the current dictionary | +2 |
 
-The weights are set so that at the default (Medium) sensitivity the app never rewrites a
-word neither dictionary recognises: the strongest evidence *without* a dictionary hit sums
-to 9, just under the threshold of 10.
+Two conditions gate the score, at every sensitivity:
+
+- **The other-layout reading has to be a real word.** Without that there is nothing to
+  tell a wrong-layout word from a name, a brand, slang or an inflection the dictionaries
+  do not list — all of which are correct input. The supporting signals cannot stand in
+  for it: "no dictionary knows this" is a fact about the dictionary, not about the typing.
+- **What you typed must not be a real word.**
+
+The score then decides how much *supporting* evidence a dictionary hit needs, and that is
+what the Sensitivity setting moves. Low is strict enough to require several signals
+agreeing on top of the hit.
+
+Missing a correction is a nuisance; rewriting correct input destroys it. Where the
+evidence cannot tell the two apart, the text is left alone.
 
 Word lookup goes to the bundled 50k lists first, then to the macOS spelling dictionaries.
 The bundled lists alone are not enough — the Ukrainian one contains no word beginning

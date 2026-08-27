@@ -7,10 +7,8 @@ struct SettingsView: View {
     /// Wide enough for the longest set of tab titles across every shipped language.
     ///
     /// Measured, not guessed: `SettingsLayoutTests` lays the real strings out in the system
-    /// font and fails if they do not fit. English needs ~623pt and Ukrainian ~701pt, against
-    /// the 536pt this used to offer — so the bar was compressing in *both* languages, just
-    /// visibly enough to notice in the longer one, where titles truncated to "Загал…" and
-    /// the selected tab's focus ring spilled over its neighbour.
+    /// font and fails if they do not fit. The custom tab bar keeps every title on one line
+    /// in both shipped languages.
     ///
     /// The height fits the General tab, the tallest, without scrolling — checked by
     /// rendering it, since a Form's height is not something a string measurement predicts.
@@ -20,6 +18,13 @@ struct SettingsView: View {
     /// it is drawn *outside* the control's bounds, so a frame flush against the window would
     /// clip it.
     static let windowPadding: CGFloat = 16
+
+    /// The custom tab bar and its selected segment share this exact height. AppKit's
+    /// segmented tab style draws the blue selection with an internal inset, leaving a pale
+    /// strip around it; using one metric for both removes that unwanted gap.
+    static let tabBarHeight: CGFloat = 26
+    static let tabCornerRadius: CGFloat = 7
+    static let selectedTabInset: CGFloat = 0
 
     /// Single source of truth for the settings window size — AppDelegate sizes the window
     /// from this rather than repeating the numbers.
@@ -32,38 +37,35 @@ struct SettingsView: View {
     /// Observed so every label re-renders the moment the interface language changes —
     /// switching language should not require reopening the window.
     @ObservedObject private var l10n = Localization.shared
+    @State private var selectedTab: SettingsTab = .general
 
     var body: some View {
-        TabView {
-            GeneralTab(settings: settings)
-                .tabItem {
-                    Label(L("tab.general"), systemImage: "gear")
-                }
+        VStack(spacing: 12) {
+            SettingsTabBar(selection: $selectedTab)
 
-            DetectionTab(settings: settings)
-                .tabItem {
-                    Label(L("tab.detection"), systemImage: "waveform")
-                }
+            // Keep every tab mounted so local view state (partially entered dictionary
+            // words, an open picker, etc.) survives switching tabs. Only the selected view
+            // participates in interaction and accessibility.
+            ZStack(alignment: .top) {
+                GeneralTab(settings: settings)
+                    .settingsTabVisibility(selectedTab == .general)
 
-            PerAppTab(settings: settings)
-                .tabItem {
-                    Label(L("tab.perApp"), systemImage: "app.badge.checkmark")
-                }
+                DetectionTab(settings: settings)
+                    .settingsTabVisibility(selectedTab == .detection)
 
-            DictionaryTab(settings: settings)
-                .tabItem {
-                    Label(L("tab.dictionary"), systemImage: "book")
-                }
+                PerAppTab(settings: settings)
+                    .settingsTabVisibility(selectedTab == .perApp)
 
-            StatisticsTab(settings: settings)
-                .tabItem {
-                    Label(L("tab.statistics"), systemImage: "chart.bar")
-                }
+                DictionaryTab(settings: settings)
+                    .settingsTabVisibility(selectedTab == .dictionary)
 
-            AboutTab()
-                .tabItem {
-                    Label(L("tab.about"), systemImage: "info.circle")
-                }
+                StatisticsTab(settings: settings)
+                    .settingsTabVisibility(selectedTab == .statistics)
+
+                AboutTab()
+                    .settingsTabVisibility(selectedTab == .about)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         // A minimum rather than a fixed size: a longer translation makes the tab bar grow
         // instead of truncating its titles.
@@ -74,6 +76,102 @@ struct SettingsView: View {
             idealHeight: Self.contentSize.height
         )
         .padding(Self.windowPadding)
+    }
+}
+
+// MARK: - Settings Tab Bar
+
+enum SettingsTab: Int, CaseIterable, Identifiable {
+    case general
+    case detection
+    case perApp
+    case dictionary
+    case statistics
+    case about
+
+    var id: Int { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return L("tab.general")
+        case .detection: return L("tab.detection")
+        case .perApp: return L("tab.perApp")
+        case .dictionary: return L("tab.dictionary")
+        case .statistics: return L("tab.statistics")
+        case .about: return L("tab.about")
+        }
+    }
+}
+
+struct SettingsTabBar: View {
+    @Binding var selection: SettingsTab
+    @ObservedObject private var l10n = Localization.shared
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(SettingsTab.allCases) { tab in
+                Button {
+                    selection = tab
+                } label: {
+                    Text(tab.title)
+                        .lineLimit(1)
+                        .padding(.horizontal, 12)
+                        .frame(height: SettingsView.tabBarHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // These buttons already expose their selected state and are operated as one
+                // tab group. Letting AppKit keep keyboard focus on the first button draws a
+                // second blue outline after another tab is selected, making two tabs look
+                // active at once.
+                .focusable(false)
+                .foregroundStyle(selection == tab ? Color.white : Color.primary)
+                .background {
+                    if selection == tab {
+                        RoundedRectangle(
+                            cornerRadius: SettingsView.tabCornerRadius,
+                            style: .continuous
+                        )
+                        .fill(Color.accentColor)
+                        .padding(SettingsView.selectedTabInset)
+                    }
+                }
+                .accessibilityAddTraits(selection == tab ? .isSelected : [])
+
+                if tab != SettingsTab.allCases.last {
+                    Rectangle()
+                        .fill(Color(nsColor: .separatorColor))
+                        .frame(width: 1, height: 14)
+                        // No pale one-pixel gutter beside the selected segment.
+                        .opacity(separatorTouchesSelection(after: tab) ? 0 : 1)
+                }
+            }
+        }
+        .frame(height: SettingsView.tabBarHeight)
+        .background(Color.primary.opacity(0.065))
+        .clipShape(
+            RoundedRectangle(
+                cornerRadius: SettingsView.tabCornerRadius,
+                style: .continuous
+            )
+        )
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .contain)
+    }
+
+    private func separatorTouchesSelection(after tab: SettingsTab) -> Bool {
+        guard let index = SettingsTab.allCases.firstIndex(of: tab),
+              index + 1 < SettingsTab.allCases.count else { return false }
+        return selection == tab || selection == SettingsTab.allCases[index + 1]
+    }
+}
+
+private extension View {
+    func settingsTabVisibility(_ visible: Bool) -> some View {
+        opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .disabled(!visible)
+            .accessibilityHidden(!visible)
     }
 }
 

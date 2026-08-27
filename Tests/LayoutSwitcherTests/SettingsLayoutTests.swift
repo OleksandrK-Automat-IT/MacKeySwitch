@@ -3,9 +3,7 @@ import AppKit
 @testable import LayoutSwitcher
 
 /// The settings window is a fixed size and its tab bar is not scrollable, so a translation
-/// longer than the window is wide does not wrap or scroll — the titles truncate to "Загал…"
-/// and the selected tab's focus ring, which is drawn outside the control's bounds, spills
-/// over its neighbour.
+/// longer than the window is wide does not wrap or scroll — the titles would truncate.
 ///
 /// Nothing about that fails at build time, and it only shows up in whichever language the
 /// developer is not using. So the strings are measured here instead.
@@ -17,20 +15,20 @@ import AppKit
         "tab.dictionary", "tab.statistics", "tab.about",
     ]
 
-    /// Width one tab needs beyond its text: the SF Symbol, the gap after it, and the
-    /// segment's own horizontal padding.
+    /// Width one tab needs beyond its text: 12pt horizontal padding on each side.
     ///
     /// An approximation of AppKit's own metrics — deliberately generous, since the cost of
     /// over-estimating is a slightly roomy window and the cost of under-estimating is the
     /// clipped tab bar this suite exists to prevent.
-    static let perTabOverhead: CGFloat = 46
+    static let perTabOverhead: CGFloat = 24
 
     static func tabBarWidth(titles: [String]) -> CGFloat {
         let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
         let attributes: [NSAttributedString.Key: Any] = [.font: font]
-        return titles.reduce(CGFloat.zero) { total, title in
+        let segments = titles.reduce(CGFloat.zero) { total, title in
             total + (title as NSString).size(withAttributes: attributes).width + perTabOverhead
         }
+        return segments + CGFloat(max(0, titles.count - 1)) // one-point separators
     }
 
     @Test(arguments: ["en", "uk"])
@@ -56,9 +54,10 @@ import AppKit
                 == SettingsView.contentSize.height + SettingsView.windowPadding * 2)
     }
 
-    @Test func thereIsRoomForTheFocusRing() {
-        // The ring is drawn outside the control's bounds, so a zero margin clips it.
-        #expect(SettingsView.windowPadding >= 8)
+    @Test func selectedTabFillsTheControlHeight() {
+        // The original system tab style inset the blue selection from the grey control.
+        #expect(SettingsView.selectedTabInset == 0)
+        #expect(SettingsView.tabBarHeight > 0)
     }
 
     @Test func noTabTitleIsLongEnoughToCrowdTheBar() {

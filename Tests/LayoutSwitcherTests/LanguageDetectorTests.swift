@@ -31,6 +31,22 @@ import Testing
         )
     }
 
+    /// As `detect`, but the text is given in Ukrainian and typed on the Ukrainian layout.
+    private func detect(
+        keycodesText: String,
+        layout: Language,
+        sensitivity: SettingsModel.Sensitivity,
+        dictionary: StubDictionary = LanguageDetectorTests.dictionary
+    ) -> Language? {
+        LanguageDetector.detectIntended(
+            keycodes: keycodes(forTypingUkrainian: keycodesText),
+            currentLayout: layout,
+            threshold: sensitivity.scoreThreshold,
+            settings: nil,
+            dictionary: dictionary
+        )
+    }
+
     // MARK: - Correcting genuinely wrong layouts
 
     @Test func wrongLayoutWordIsCorrectedToUkrainian() {
@@ -64,14 +80,23 @@ import Testing
 
     // MARK: - Sensitivity actually changes behaviour
 
-    @Test func sensitivityDecidesGibberishThatNeitherDictionaryKnows() {
-        // "vkzx" is in no dictionary, but is full of pairs English never uses, so the
-        // supporting signals fire without a dictionary hit. That is exactly the band the
-        // Sensitivity setting is supposed to govern.
-        let gibberish = "vkzx"
-        #expect(detect(gibberish, layout: .english, sensitivity: .low) == nil)
-        #expect(detect(gibberish, layout: .english, sensitivity: .medium) == nil)
-        #expect(detect(gibberish, layout: .english, sensitivity: .veryHigh) != nil)
+    @Test(arguments: [SettingsModel.Sensitivity.low, .medium, .high, .veryHigh])
+    func aWordNeitherDictionaryKnowsIsNeverRewritten(sensitivity: SettingsModel.Sensitivity) {
+        // "vkzx" is in no dictionary and is full of pairs English never uses, so every
+        // supporting signal fires — but the other reading is not a word either, so there
+        // is no evidence the *other* layout was intended. It used to be rewritten at the
+        // two most aggressive settings; nothing distinguishes it from a name or an
+        // unlisted inflection, both of which are correct input.
+        #expect(detect("vkzx", layout: .english, sensitivity: sensitivity) == nil)
+    }
+
+    /// The regression that prompted the gate: real words the 50k lists happen not to
+    /// contain scored 2 on `currentPrefixInvalid` alone — exactly the Very High threshold —
+    /// and were replaced with Latin gibberish as the user typed.
+    @Test(arguments: [SettingsModel.Sensitivity.low, .medium, .high, .veryHigh])
+    func anUnlistedUkrainianWordIsNotRewritten(sensitivity: SettingsModel.Sensitivity) {
+        // "київ" is absent from the stub dictionary, as it is from the bundled corpus.
+        #expect(detect(keycodesText: "київ", layout: .ukrainian, sensitivity: sensitivity) == nil)
     }
 
     @Test func thresholdsAreOrderedFromLeastToMostAggressive() {
