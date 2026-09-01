@@ -414,6 +414,12 @@ struct PerAppTab: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
+            // The default exclusions are invisible otherwise: a blacklisted editor simply
+            // stops correcting, which reads as a bug rather than a setting.
+            Text(L("perApp.defaultsHint"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+
             List {
                 ForEach(settings.appRules) { rule in
                     HStack {

@@ -313,7 +313,7 @@ final class SettingsModel: ObservableObject {
     }
 
     func isAppExcluded(bundleID: String) -> Bool {
-        appRules.first(where: { $0.bundleID == bundleID && $0.isExcluded }) != nil
+        AppBlacklist.isExcluded(bundleID: bundleID, userRules: appRules)
     }
 
     private func saveAppRules() {

@@ -67,6 +67,7 @@
 "sensitivity.veryHigh" = "Very High";
 
 /* Per-app tab */
+"perApp.defaultsHint" = "Terminals and code editors are excluded by default. To change that for one of them, add it below and turn its switch off.";
 "perApp.hint" = "Excluded apps won't trigger automatic layout switching.";
 "perApp.addRunning" = "Add Running App";
 "perApp.addRunningHelp" = "Pick a running app to add to the list";

@@ -107,10 +107,12 @@ final class KeyboardMonitor {
         set { stateLock.lock(); _isCorrecting = newValue; stateLock.unlock() }
     }
 
-    /// Set when a real keystroke lands after a correction was claimed but before its
-    /// backspaces went out. The snapshot of "text behind the caret" is stale at that point,
-    /// so the correction aborts rather than erasing characters the user just typed.
-    private var _userTypedDuringCorrection: Bool = false
+    /// Set when anything invalidates a correction after it was claimed but before its
+    /// backspaces went out: a real keystroke, a switch to another app, or a manual layout
+    /// change. In each case the snapshot of "text behind the caret" is stale, and the
+    /// backspaces would land on text the plan does not describe — in another app's window,
+    /// in the worst case. The correction aborts instead.
+    private var _correctionContextDirty: Bool = false
 
     /// Re-enables a tap the window server disabled (timeout, or Accessibility revoked and
     /// re-granted). A one-shot re-enable inside the callback cannot recover from the
@@ -228,8 +230,19 @@ final class KeyboardMonitor {
     /// here would erase unrelated text, so the snapshot must die with the context.
     func frontmostAppDidChange(bundleID: String?) {
         cachedFrontmostBundleID = bundleID
+        // A queued correction was planned against the previous app's caret. No keystroke
+        // accompanies an app switch, so without this the backspaces would be delivered to
+        // whatever the user just switched to.
+        markCorrectionContextDirty()
         resetBuffer()
         clearCorrectionSnapshot()
+    }
+
+    /// Invalidate a correction that has been claimed but not yet typed.
+    private func markCorrectionContextDirty() {
+        stateLock.lock()
+        if _isCorrecting { _correctionContextDirty = true }
+        stateLock.unlock()
     }
 
     // MARK: - Event Handling
@@ -262,11 +275,19 @@ final class KeyboardMonitor {
         // longer matches the snapshot the correction was built from. performCorrection
         // checks this flag once more before its first backspace and aborts.
         stateLock.lock()
-        if _isCorrecting { _userTypedDuringCorrection = true }
+        if _isCorrecting { _correctionContextDirty = true }
         stateLock.unlock()
 
         let effectiveEnabled = settings?.isEnabled ?? isEnabled
         guard effectiveEnabled else { return }
+
+        // Never buffer anything typed into a password field. This is the system-wide flag
+        // only — a cheap read, safe per keystroke. The costlier accessibility query runs
+        // once per word, at the boundary.
+        if SecureInputDetector.isSystemSecureInputEnabled {
+            resetBuffer()
+            return
+        }
 
         let flags = event.flags
 
@@ -455,8 +476,24 @@ final class KeyboardMonitor {
               !isCorrecting,
               !passwordHeuristic.looksLikePassword else { return }
 
+        // The heuristic above only guesses from the shape of the characters. Ask the
+        // system what the field actually is before rewriting anything into it; `.unknown`
+        // counts as unsafe, since the cost of being wrong is a mangled credential.
+        guard SecureInputDetector.current() == .notSecure else {
+            debugLog("[LayoutSwitcher] Skipped correction: secure or unknown input field")
+            return
+        }
+
         let layout = wordStartLayout ?? currentLanguage
         let buffer = keyBuffer
+
+        // URLs, emails and identifiers read as ordinary words to the detector — several
+        // US-layout punctuation keys are Ukrainian letters, so "ok.ua" buffers like any
+        // other word. Rewriting one breaks a link the user is about to use.
+        if WordFilter.shouldSkip(KeyMapping.reconstruct(keycodes: buffer, language: layout)) {
+            debugLog("[LayoutSwitcher] Skipped correction: looks like a URL, email or identifier")
+            return
+        }
         let threshold = settings?.sensitivity.scoreThreshold
             ?? SettingsModel.Sensitivity.medium.scoreThreshold
         let delayMs = settings?.correctionDelayMs ?? 50
@@ -483,7 +520,7 @@ final class KeyboardMonitor {
         // while the first was still queued.
         stateLock.lock()
         _isCorrecting = true
-        _userTypedDuringCorrection = false
+        _correctionContextDirty = false
         stateLock.unlock()
 
         // The word, plus the trailing space when one actually reached the screen.
@@ -526,11 +563,11 @@ final class KeyboardMonitor {
         // word. The backspace count was snapshotted at the boundary, so erasing now would
         // eat the fresh keystrokes. Abort — a missed correction beats mangled text.
         stateLock.lock()
-        let dirty = _userTypedDuringCorrection
+        let dirty = _correctionContextDirty
         if dirty { _isCorrecting = false }
         stateLock.unlock()
         if dirty {
-            debugLog("[LayoutSwitcher] Correction aborted: user kept typing")
+            debugLog("[LayoutSwitcher] Correction aborted: editing context changed")
             return
         }
 
@@ -694,6 +731,12 @@ final class KeyboardMonitor {
     /// Press backspace exactly `characters` times.
     private func deleteBackward(characters: Int) {
         guard characters > 0 else { return }
+        // A miscomputed count here is destructive, and the buffer is bounded, so treat
+        // anything past that bound as a bug and refuse rather than erase the document.
+        guard characters <= maxBufferLength + 1 else {
+            print("[LayoutSwitcher] Refusing to delete \(characters) characters — count out of range")
+            return
+        }
         for _ in 0..<characters {
             simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
         }
