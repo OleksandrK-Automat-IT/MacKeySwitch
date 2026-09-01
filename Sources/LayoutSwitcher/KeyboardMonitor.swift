@@ -222,6 +222,19 @@ final class KeyboardMonitor {
         stop()
     }
 
+    /// Read the live layout, refreshing the cache with it. Called once per word.
+    ///
+    /// The dead-key profile is re-probed only when the layout actually changed: probing
+    /// costs a `UCKeyTranslate` per key, which is far too much to repeat for every word.
+    private func confirmedLayout() -> Language? {
+        let live = InputSourceManager.currentLanguage()
+        if live != cachedLayout {
+            cachedLayout = live
+            cachedDeadKeys = InputSourceManager.deadKeyProfile()
+        }
+        return live
+    }
+
     // MARK: - Cache updates (pushed by AppDelegate's system observers)
 
     /// The selected keyboard layout changed. Refreshes the cache and, when the change came
@@ -450,7 +463,20 @@ final class KeyboardMonitor {
                 }
                 lastManualSwitchTime = nil
             }
-            wordStartLayout = currentLang
+            // Confirm the layout with the system instead of trusting the cache.
+            //
+            // The cache is fed by a distributed notification, which arrives late often
+            // enough to matter — most reliably right after the app's own switch at the end
+            // of a correction, which is exactly when the next word begins. A word
+            // attributed to the previous layout reconstructs as gibberish, that gibberish
+            // matches the other layout's dictionary, and the "correction" retypes the text
+            // already on screen. Undo then replaces the real word with the gibberish the
+            // app believed was there.
+            //
+            // Once per word is the same frequency as the dictionary lookup this path
+            // already performs, and nowhere near the per-keystroke cost the cache exists
+            // to avoid.
+            wordStartLayout = confirmedLayout() ?? currentLang
         }
 
         keyBuffer.append(Keystroke(keycode: keycode, shift: isShifted, capsLock: capsLock))
@@ -519,8 +545,7 @@ final class KeyboardMonitor {
               !passwordHeuristic.looksLikePassword else { return false }
 
         // The heuristic above only guesses from the shape of the characters. Ask the
-        // system what the field actually is before rewriting anything into it; `.unknown`
-        // counts as unsafe, since the cost of being wrong is a mangled credential.
+        // system what the field actually is before rewriting anything into it.
         guard SecureInputDetector.current() == .notSecure else {
             debugLog("[LayoutSwitcher] Skipped correction: password field")
             return false
@@ -528,6 +553,15 @@ final class KeyboardMonitor {
 
         let layout = wordStartLayout ?? currentLanguage
         let buffer = keyBuffer
+
+        // Belt and braces on the same hazard the word-start confirmation addresses: if the
+        // system disagrees about the layout now, the buffer does not describe what is on
+        // screen, and correcting it would replace real text with a reconstruction of text
+        // that was never typed. A missed correction is the cheap outcome here.
+        if let live = confirmedLayout(), live != layout {
+            debugLog("[LayoutSwitcher] Skipped correction: layout changed under the word")
+            return false
+        }
 
         // URLs, emails and identifiers read as ordinary words to the detector — several
         // US-layout punctuation keys are Ukrainian letters, so "ok.ua" buffers like any
