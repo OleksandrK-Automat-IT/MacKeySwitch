@@ -55,7 +55,13 @@ final class KeyboardMonitor {
         let layout: Language
         /// Whether the boundary space actually printed — a dead key may have eaten it.
         let boundaryReachedScreen: Bool
+        let finishedAt: Date
     }
+
+    /// How long a finished word stays eligible for the on-demand shortcut. Matches undo's
+    /// window: past it, the odds that the text is still behind the caret are not worth the
+    /// cost of being wrong.
+    private static let completedWordLifetime: TimeInterval = 10.0
     private var lastCompletedWord: CompletedWord?
 
     // Track the language when word started
@@ -330,7 +336,14 @@ final class KeyboardMonitor {
 
         // Skip hotkeys
         if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) {
+            // The snapshot of the finished word survives the chord. A chord prints nothing,
+            // so that word is still behind the caret — and one of these chords *is* the
+            // shortcut asking to correct it. Clearing it here made the on-demand correction
+            // unable to ever find anything: the tap sees the chord before the hotkey fires.
+            // Staleness is bounded by `completedWordLifetime` rather than by this reset.
+            let finished = lastCompletedWord
             resetBuffer()
+            lastCompletedWord = finished
             return
         }
 
@@ -395,7 +408,8 @@ final class KeyboardMonitor {
                 let finished = CompletedWord(
                     keystrokes: keyBuffer,
                     layout: wordStartLayout ?? currentLang,
-                    boundaryReachedScreen: boundaryReachedScreen
+                    boundaryReachedScreen: boundaryReachedScreen,
+                    finishedAt: Date()
                 )
                 var corrected = false
                 if settings?.correctionMode ?? .automatic == .automatic {
@@ -738,7 +752,8 @@ final class KeyboardMonitor {
             keystrokes = keyBuffer
             layout = wordStartLayout ?? cachedLayout ?? .english
             boundaryReachedScreen = false
-        } else if let finished = lastCompletedWord {
+        } else if let finished = lastCompletedWord,
+                  Date().timeIntervalSince(finished.finishedAt) < Self.completedWordLifetime {
             keystrokes = finished.keystrokes
             layout = finished.layout
             boundaryReachedScreen = finished.boundaryReachedScreen
@@ -772,6 +787,9 @@ final class KeyboardMonitor {
                 correctText: correctText,
                 originalText: originalText,
                 deleteCount: deleteCount,
+                // Mid-word there is no boundary space to put back, and writing one anyway
+                // would insert a character the user never typed.
+                restoreBoundarySpace: boundaryReachedScreen,
                 from: layout,
                 to: target,
                 delayMs: delayMs,
