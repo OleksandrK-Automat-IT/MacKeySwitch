@@ -30,13 +30,22 @@ enum SecureInputDetector {
     /// Ask accessibility what the focused element is. More precise than the system flag —
     /// some fields are marked without enabling secure input mode — but it is an IPC round
     /// trip, so call it per word rather than per keystroke.
+    ///
+    /// Returns `.unknown` freely: most ordinary text fields have no subrole at all, and
+    /// plenty of apps answer nothing useful. Interpreting that is `resolve`'s job.
     static func focusedFieldState() -> SecureFieldState {
         guard AXIsProcessTrusted() else { return .unknown }
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return .unknown
+        }
 
-        let systemWide = AXUIElementCreateSystemWide()
+        // Asking the application element rather than the system-wide one: the system-wide
+        // focused-element query is the less reliable of the two, and a failure here reads
+        // as "no answer", which must never be mistaken for "password field".
+        let application = AXUIElementCreateApplication(pid)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
-                systemWide, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+                application, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let focusedValue = focused,
               CFGetTypeID(focusedValue) == AXUIElementGetTypeID()
         else {
@@ -49,17 +58,31 @@ enum SecureInputDetector {
                 element, kAXSubroleAttribute as CFString, &subrole) == .success,
               let subroleName = subrole as? String
         else {
-            // No subrole exposed — the app may still be showing a password field.
+            // Subroles are optional, and a plain text field or text area simply has none.
             return .unknown
         }
 
         return subroleName == (kAXSecureTextFieldSubrole as String) ? .secure : .notSecure
     }
 
-    /// Combined verdict. The system flag is authoritative when set; otherwise defer to
-    /// accessibility.
+    /// Turn the two signals into an answer callers can act on. Never returns `.unknown`.
+    ///
+    /// The direction of the fallback matters, and getting it backwards is what broke
+    /// automatic correction everywhere: treating "accessibility said nothing" as unsafe
+    /// blocks every correction, because saying nothing is the normal case — AXSubrole is
+    /// optional and ordinary text fields do not set it. Secure fields are the ones that
+    /// announce themselves, through the subrole or by switching on secure input mode; the
+    /// absence of both is evidence of an ordinary field, not of an unreadable one.
+    static func resolve(accessibility: SecureFieldState, systemSecureInput: Bool) -> SecureFieldState {
+        if systemSecureInput { return .secure }
+        return accessibility == .secure ? .secure : .notSecure
+    }
+
+    /// Combined verdict for the field that has focus right now.
     static func current() -> SecureFieldState {
+        // Checked first because it is cheap and decisive; the accessibility round trip is
+        // skipped entirely when the system already says a password field has focus.
         if isSystemSecureInputEnabled { return .secure }
-        return focusedFieldState()
+        return resolve(accessibility: focusedFieldState(), systemSecureInput: false)
     }
 }

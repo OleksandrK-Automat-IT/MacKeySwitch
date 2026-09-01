@@ -522,7 +522,7 @@ final class KeyboardMonitor {
         // system what the field actually is before rewriting anything into it; `.unknown`
         // counts as unsafe, since the cost of being wrong is a mangled credential.
         guard SecureInputDetector.current() == .notSecure else {
-            debugLog("[LayoutSwitcher] Skipped correction: secure or unknown input field")
+            debugLog("[LayoutSwitcher] Skipped correction: password field")
             return false
         }
 
@@ -691,7 +691,7 @@ final class KeyboardMonitor {
         guard !isCorrecting else { return }
 
         guard SecureInputDetector.current() == .notSecure else {
-            debugLog("[LayoutSwitcher] On-demand correction skipped: secure or unknown field")
+            debugLog("[LayoutSwitcher] On-demand correction skipped: password field")
             return
         }
 

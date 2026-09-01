@@ -56,4 +56,18 @@ import Testing
         #expect(!WordFilter.shouldSkip("Hello"))
         #expect(!WordFilter.shouldSkip("HELLO"))
     }
+
+    @Test func theFilterBarelyTouchesRealUkrainian() {
+        // The filter's failure mode is silent: anything it skips is a correction that never
+        // happens, with no error to notice. Measured against the shipped corpus rather than
+        // argued about — a rule that starts eating real words shows up here as a number.
+        let typedOnUSLayout = Corpus.ukrainian.map {
+            LayoutTransliterator.convert($0, to: .english)
+        }
+        let skipped = typedOnUSLayout.filter { WordFilter.shouldSkip($0) }
+        let rate = Double(skipped.count) / Double(max(typedOnUSLayout.count, 1))
+        let examples = skipped.prefix(10).joined(separator: ", ")
+        let report = "filter skips \(skipped.count) of \(typedOnUSLayout.count) real words: \(examples)"
+        #expect(rate < 0.001, "\(report)")
+    }
 }
