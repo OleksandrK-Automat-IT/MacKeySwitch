@@ -28,7 +28,7 @@ final class KeyboardMonitor {
     /// so without a marker the app re-reads its own output. `typeString` makes that acute:
     /// it posts unicode on virtual key 0, which is the keycode for "a", so every corrected
     /// character used to look like a fresh letter keystroke.
-    private static let syntheticEventMarker: Int64 = 0x4D4B_5357 // 'MKSW'
+    static let syntheticEventMarker: Int64 = 0x4D4B_5357 // 'MKSW'
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?

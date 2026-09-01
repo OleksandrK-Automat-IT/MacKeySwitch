@@ -28,6 +28,9 @@ enum SelectionCorrector {
     /// into the gap.
     private static let pasteboardRestoreDelay: TimeInterval = 0.3
 
+    /// How long to wait for the shortcut's own modifier keys to come back up.
+    private static let modifierReleaseTimeout: TimeInterval = 1.0
+
     @discardableResult
     static func correctSelection() -> Result<String, Failure> {
         guard AXIsProcessTrusted() else { return .failure(.noAccessibility) }
@@ -106,15 +109,44 @@ enum SelectionCorrector {
         pasteboard.setString(text, forType: .string)
         let ourChangeCount = pasteboard.changeCount
 
-        postPaste()
+        // The shortcut that got us here is a chord, and the user is still holding it. A
+        // posted ⌘V carries its own flags, but the hardware modifiers are live at the same
+        // time, so the target app sees ⌃⇧⌘V — which is not Paste, and nothing happens.
+        // Wait for the keys to come up first. Whether it worked depended on how fast the
+        // user let go, which is exactly the kind of intermittence that reads as "it stopped
+        // working".
+        whenModifiersAreReleased {
+            postPaste()
 
-        DispatchQueue.main.asyncAfter(deadline: .now() + pasteboardRestoreDelay) {
-            guard pasteboard.changeCount == ourChangeCount else { return }
-            pasteboard.clearContents()
-            if !saved.isEmpty {
-                pasteboard.writeObjects(saved)
+            DispatchQueue.main.asyncAfter(deadline: .now() + pasteboardRestoreDelay) {
+                guard pasteboard.changeCount == ourChangeCount else { return }
+                pasteboard.clearContents()
+                if !saved.isEmpty {
+                    pasteboard.writeObjects(saved)
+                }
             }
         }
+    }
+
+    /// Run `work` once no modifier key is physically down, polling on the main queue.
+    ///
+    /// Polling rather than blocking: this runs in the hotkey handler on the main thread,
+    /// and sleeping there freezes the UI of every app waiting on it. Gives up after
+    /// `modifierReleaseTimeout` and proceeds anyway — a paste that may not land beats
+    /// leaving the pasteboard borrowed and the selection untouched.
+    private static func whenModifiersAreReleased(_ work: @escaping () -> Void) {
+        let deadline = Date().addingTimeInterval(modifierReleaseTimeout)
+        let held: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
+
+        func poll() {
+            let flags = CGEventSource.flagsState(.combinedSessionState)
+            if flags.intersection(held).isEmpty || Date() >= deadline {
+                work()
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { poll() }
+        }
+        poll()
     }
 
     private static func postPaste() {
@@ -126,7 +158,12 @@ enum SelectionCorrector {
         }
         down.flags = .maskCommand
         up.flags = .maskCommand
-        down.post(tap: .cgAnnotatedSessionEventTap)
-        up.post(tap: .cgAnnotatedSessionEventTap)
+        // Stamped like every other event this app posts, so the keyboard monitor does not
+        // mistake the paste for the user typing and discard the word behind the caret.
+        for event in [down, up] {
+            event.setIntegerValueField(.eventSourceUserData,
+                                       value: KeyboardMonitor.syntheticEventMarker)
+            event.post(tap: .cgAnnotatedSessionEventTap)
+        }
     }
 }

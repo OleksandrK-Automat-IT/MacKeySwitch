@@ -145,7 +145,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .success:
             settings.recordCorrection()
         case .failure(let reason):
-            debugLog("[LayoutSwitcher] Selection correction skipped: \(reason)")
+            // Deliberately print, not debugLog: this path is silent by nature — nothing
+            // moves on screen when it declines — so in a release build there was no way to
+            // tell a failure from a shortcut that never fired.
+            print("[LayoutSwitcher] Selection correction skipped: \(reason)")
         }
     }
 
