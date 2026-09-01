@@ -142,14 +142,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The conversion selects an input source. Claim it up front so the monitor does not
         // read the resulting notification as a manual switch.
         monitor.noteSelfInitiatedLayoutSwitch()
-        switch SelectionCorrector.correctSelection() {
-        case .success:
-            settings.recordCorrection()
-        case .failure(let reason):
-            // Deliberately print, not debugLog: this path is silent by nature — nothing
-            // moves on screen when it declines — so in a release build there was no way to
-            // tell a failure from a shortcut that never fired.
-            appLog("[LayoutSwitcher] selection skipped: \(reason)")
+        SelectionCorrector.correctSelection { [weak self] result in
+            switch result {
+            case .success:
+                self?.settings.recordCorrection()
+            case .failure(let reason):
+                // Logged to a file, not stdout: this path is silent by nature — nothing
+                // moves on screen when it declines — so without a record a refusal and a
+                // shortcut that never fired look identical.
+                appLog("[LayoutSwitcher] selection skipped: \(reason)")
+            }
         }
     }
 
