@@ -112,10 +112,10 @@ final class CarbonHotkey {
         )
         if status == noErr {
             self.ref = newRef
-            print("[CarbonHotkey] Registered hotkey id=\(id) keyCode=\(keyCode) mods=0x\(String(carbonModifiers, radix: 16))")
+            appLog("[CarbonHotkey] registered id=\(id) keyCode=\(keyCode) mods=0x\(String(carbonModifiers, radix: 16))")
             return true
         }
-        print("[CarbonHotkey] RegisterEventHotKey failed with OSStatus \(status) (keyCode=\(keyCode), mods=0x\(String(carbonModifiers, radix: 16)))")
+        appLog("[CarbonHotkey] REGISTER FAILED status=\(status) keyCode=\(keyCode) mods=0x\(String(carbonModifiers, radix: 16))")
         return false
     }
 

@@ -48,7 +48,7 @@ enum SelectionCorrector {
         replaceSelection(with: converted)
         InputSourceManager.switchTo(target)
 
-        debugLog("[LayoutSwitcher] Selection converted \(sourceLanguage.rawValue) -> \(target.rawValue)")
+        appLog("[LayoutSwitcher] selection converted \(sourceLanguage.rawValue) -> \(target.rawValue), \(selection.count) chars")
         return .success(converted)
     }
 
