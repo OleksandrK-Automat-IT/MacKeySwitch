@@ -207,7 +207,12 @@ struct GeneralTab: View {
             }
 
             Section {
-                HotkeyRecorderRow(settings: settings)
+                HotkeyRecorderRow(labelKey: "hotkey.label", hotkey: $settings.undoHotkey)
+                HotkeyRecorderRow(labelKey: "hotkey.selection.label",
+                                  hotkey: $settings.selectionHotkey)
+                Text(L("hotkey.selection.hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 Text(L("hotkey.hint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -241,22 +246,26 @@ struct GeneralTab: View {
 
 // MARK: - Hotkey Recorder
 
-/// Row that shows the current undo hotkey and lets the user re-record it.
+/// Row that shows one shortcut and lets the user re-record it.
 /// While "Record" is active, an NSEvent local monitor captures the next keyDown
 /// and stores its keyCode + modifier flags. Esc cancels, Delete disables.
+///
+/// Takes the binding rather than reaching into the model, so a second shortcut is a second
+/// instance of this row rather than a second copy of the recording logic.
 struct HotkeyRecorderRow: View {
-    @ObservedObject var settings: SettingsModel
+    let labelKey: String
+    @Binding var hotkey: HotkeyBinding
     @ObservedObject private var l10n = Localization.shared
     @State private var isRecording = false
     @State private var monitor: Any?
 
     var body: some View {
         HStack {
-            Text(L("hotkey.label"))
+            Text(L(labelKey))
             Spacer()
 
             Button(action: toggleRecording) {
-                Text(isRecording ? L("hotkey.recording") : settings.undoHotkey.description)
+                Text(isRecording ? L("hotkey.recording") : hotkey.description)
                     .monospacedDigit()
                     .frame(minWidth: 140)
                     .padding(.horizontal, 8)
@@ -269,14 +278,14 @@ struct HotkeyRecorderRow: View {
             .buttonStyle(.plain)
 
             Button {
-                settings.undoHotkey = .disabled
+                hotkey = .disabled
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(.secondary)
             }
             .buttonStyle(.plain)
             .help(L("hotkey.disable"))
-            .disabled(!settings.undoHotkey.isEnabled)
+            .disabled(!hotkey.isEnabled)
         }
         .onDisappear { stopRecording() }
     }
@@ -310,7 +319,7 @@ struct HotkeyRecorderRow: View {
         }
         // Delete/Backspace disables
         if kc == 0x33 {
-            settings.undoHotkey = .disabled
+            hotkey = .disabled
             stopRecording()
             return
         }
@@ -321,7 +330,7 @@ struct HotkeyRecorderRow: View {
         guard !meaningful.isDisjoint(with: nonShift) else { return }
         // Keycode and modifiers are assigned together: two separate assignments published
         // twice, and the first publish carried the new key with the old modifiers.
-        settings.undoHotkey = HotkeyBinding(keyCode: Int(kc), modifiers: meaningful.rawValue)
+        hotkey = HotkeyBinding(keyCode: Int(kc), modifiers: meaningful.rawValue)
         stopRecording()
     }
 }

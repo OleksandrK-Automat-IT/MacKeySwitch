@@ -36,6 +36,8 @@
 
 /* Undo hotkey */
 "hotkey.section" = "Undo Hotkey";
+"hotkey.selection.label" = "Convert selected text:";
+"hotkey.selection.hint" = "Select text anywhere, then press this shortcut to re-read it in the other layout.";
 "hotkey.label" = "Undo last correction:";
 "hotkey.recording" = "Press keys… (Esc to cancel, ⌫ to disable)";
 "hotkey.hint" = "Press a key combination with at least one modifier (⌃ ⌥ ⇧ ⌘).";

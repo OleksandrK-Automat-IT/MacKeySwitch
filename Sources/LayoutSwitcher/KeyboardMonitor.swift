@@ -225,6 +225,13 @@ final class KeyboardMonitor {
         debugLog("[LayoutSwitcher] Manual layout switch detected, suppressing next word")
     }
 
+    /// Record that this app is about to change the input source, so the notification it
+    /// causes is not read as the user switching layout by hand — which would suppress the
+    /// next word's correction for no reason.
+    func noteSelfInitiatedLayoutSwitch() {
+        lastSelfSwitchTime = Date()
+    }
+
     /// The frontmost application changed. The caret is now somewhere else entirely.
     /// The undo snapshot describes text in the *previous* app; firing the undo hotkey
     /// here would erase unrelated text, so the snapshot must die with the context.

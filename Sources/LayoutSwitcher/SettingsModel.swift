@@ -231,6 +231,17 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// The global shortcut that converts the current selection. Default ⌃⇧X.
+    ///
+    /// Distinct from the undo shortcut on purpose: undo reverses what the app just did,
+    /// this acts on text the app never saw.
+    @Published var selectionHotkey: HotkeyBinding {
+        didSet {
+            defaults.set(selectionHotkey.keyCode, forKey: "selectionHotkeyKeyCode")
+            defaults.set(Int(bitPattern: selectionHotkey.modifiers), forKey: "selectionHotkeyModifiers")
+        }
+    }
+
     // MARK: - Statistics
 
     @Published var totalCorrections: Int {
@@ -275,6 +286,13 @@ final class SettingsModel: ObservableObject {
         let modifiers = storedMods.map { UInt(bitPattern: $0) }
             ?? NSEvent.ModifierFlags([.control, .shift]).rawValue
         self.undoHotkey = HotkeyBinding(keyCode: keyCode, modifiers: modifiers)
+
+        let storedSelectionKeyCode = defaults.object(forKey: "selectionHotkeyKeyCode") as? Int ?? 0x07 // 'X'
+        let selectionKeyCode = storedSelectionKeyCode == 0 ? -1 : storedSelectionKeyCode
+        let storedSelectionMods = defaults.object(forKey: "selectionHotkeyModifiers") as? Int
+        let selectionModifiers = storedSelectionMods.map { UInt(bitPattern: $0) }
+            ?? NSEvent.ModifierFlags([.control, .shift]).rawValue
+        self.selectionHotkey = HotkeyBinding(keyCode: selectionKeyCode, modifiers: selectionModifiers)
 
         if let data = defaults.data(forKey: "appRules"),
            let rules = try? JSONDecoder().decode([AppRule].self, from: data) {

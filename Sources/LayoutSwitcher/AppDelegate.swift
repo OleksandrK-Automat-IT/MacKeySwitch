@@ -68,6 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         accessibilityTimer?.invalidate()
         undoHotkey.unregister()
+        selectionHotkey.unregister()
         monitor.stop()
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -81,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Global Undo Hotkey (Carbon-based)
 
     private let undoHotkey = CarbonHotkey()
+    private let selectionHotkey = CarbonHotkey()
     private var cancellables = Set<AnyCancellable>()
 
     /// Register the system-wide undo hotkey via Carbon. Re-registers automatically
@@ -95,6 +97,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settings.$undoHotkey
             .sink { [weak self] binding in self?.applyUndoHotkey(binding) }
             .store(in: &cancellables)
+
+        selectionHotkey.onFire = { [weak self] in self?.handleSelectionHotkey() }
+        settings.$selectionHotkey
+            .sink { [weak self] binding in self?.applySelectionHotkey(binding) }
+            .store(in: &cancellables)
+    }
+
+    private func applySelectionHotkey(_ binding: HotkeyBinding) {
+        guard binding.isEnabled else {
+            selectionHotkey.unregister()
+            print("[LayoutSwitcher] Selection hotkey disabled.")
+            return
+        }
+        let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
+        _ = selectionHotkey.register(
+            keyCode: UInt32(binding.keyCode),
+            carbonModifiers: CarbonHotkey.carbonModifiers(from: flags)
+        )
+    }
+
+    private func handleSelectionHotkey() {
+        // The conversion selects an input source. Claim it up front so the monitor does not
+        // read the resulting notification as a manual switch.
+        monitor.noteSelfInitiatedLayoutSwitch()
+        switch SelectionCorrector.correctSelection() {
+        case .success:
+            settings.recordCorrection()
+        case .failure(let reason):
+            debugLog("[LayoutSwitcher] Selection correction skipped: \(reason)")
+        }
     }
 
     private func applyUndoHotkey(_ binding: HotkeyBinding) {
