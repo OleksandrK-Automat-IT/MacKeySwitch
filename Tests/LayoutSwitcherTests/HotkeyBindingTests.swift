@@ -70,3 +70,34 @@ import AppKit
         }
     }
 }
+
+/// Three global shortcuts now ship enabled by default. Carbon refuses to register a
+/// duplicate key-and-modifier combination, and it does so quietly — the second shortcut
+/// simply never fires — so a clash between defaults would ship as a dead feature.
+@Suite struct DefaultHotkeyTests {
+
+    @Test func defaultsAreDistinct() {
+        let defaults = SettingsModel.DefaultHotkeys.all
+        for (index, binding) in defaults.enumerated() {
+            for other in defaults[(index + 1)...] {
+                #expect(binding != other, "two shortcuts default to \(binding.description)")
+            }
+        }
+    }
+
+    @Test func everyDefaultIsEnabled() {
+        for binding in SettingsModel.DefaultHotkeys.all {
+            #expect(binding.isEnabled, "\(binding.description) defaults to disabled")
+        }
+    }
+
+    @Test func everyDefaultCarriesANonShiftModifier() {
+        // A bare key, or one held only with Shift, would swallow ordinary typing.
+        let nonShift = NSEvent.ModifierFlags([.control, .option, .command])
+        for binding in SettingsModel.DefaultHotkeys.all {
+            let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
+            #expect(!flags.isDisjoint(with: nonShift),
+                    "\(binding.description) would intercept plain typing")
+        }
+    }
+}

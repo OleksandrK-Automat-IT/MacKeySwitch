@@ -69,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         accessibilityTimer?.invalidate()
         undoHotkey.unregister()
         selectionHotkey.unregister()
+        correctWordHotkey.unregister()
         monitor.stop()
         DistributedNotificationCenter.default().removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
@@ -83,6 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private let undoHotkey = CarbonHotkey()
     private let selectionHotkey = CarbonHotkey()
+    private let correctWordHotkey = CarbonHotkey()
     private var cancellables = Set<AnyCancellable>()
 
     /// Register the system-wide undo hotkey via Carbon. Re-registers automatically
@@ -98,10 +100,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] binding in self?.applyUndoHotkey(binding) }
             .store(in: &cancellables)
 
+        correctWordHotkey.onFire = { [weak self] in self?.monitor.correctLastWordOnDemand() }
+        settings.$correctWordHotkey
+            .sink { [weak self] binding in self?.applyCorrectWordHotkey(binding) }
+            .store(in: &cancellables)
+
         selectionHotkey.onFire = { [weak self] in self?.handleSelectionHotkey() }
         settings.$selectionHotkey
             .sink { [weak self] binding in self?.applySelectionHotkey(binding) }
             .store(in: &cancellables)
+    }
+
+    private func applyCorrectWordHotkey(_ binding: HotkeyBinding) {
+        guard binding.isEnabled else {
+            correctWordHotkey.unregister()
+            print("[LayoutSwitcher] Correct-word hotkey disabled.")
+            return
+        }
+        let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
+        _ = correctWordHotkey.register(
+            keyCode: UInt32(binding.keyCode),
+            carbonModifiers: CarbonHotkey.carbonModifiers(from: flags)
+        )
     }
 
     private func applySelectionHotkey(_ binding: HotkeyBinding) {

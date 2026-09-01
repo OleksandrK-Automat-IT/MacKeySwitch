@@ -231,6 +231,58 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// The shortcuts a fresh install starts with.
+    ///
+    /// Named rather than inlined so a test can assert they are distinct: Carbon refuses a
+    /// duplicate key-and-modifier combination, and the loser of a clash simply never fires.
+    enum DefaultHotkeys {
+        private static let controlShift = NSEvent.ModifierFlags([.control, .shift]).rawValue
+
+        /// ⌃⇧Z
+        static let undo = HotkeyBinding(keyCode: 0x06, modifiers: controlShift)
+        /// ⌃⇧Space
+        static let correctWord = HotkeyBinding(keyCode: 0x31, modifiers: controlShift)
+        /// ⌃⇧X
+        static let selection = HotkeyBinding(keyCode: 0x07, modifiers: controlShift)
+
+        static let all: [HotkeyBinding] = [undo, correctWord, selection]
+    }
+
+    /// Whether finishing a word may correct it on its own.
+    enum CorrectionMode: Int, CaseIterable, Identifiable {
+        /// Correct at the word boundary, as soon as the evidence is good enough.
+        case automatic = 0
+        /// Never correct unaided; wait to be asked. For people who would rather miss a
+        /// correction than have one arrive unrequested.
+        case hotkeyOnly = 1
+
+        var id: Int { rawValue }
+
+        var label: String {
+            switch self {
+            case .automatic: return L("mode.automatic")
+            case .hotkeyOnly: return L("mode.hotkeyOnly")
+            }
+        }
+    }
+
+    @Published var correctionMode: CorrectionMode {
+        didSet { defaults.set(correctionMode.rawValue, forKey: "correctionMode") }
+    }
+
+    /// The global shortcut that corrects the last word on demand. Default ⌃⇧Space.
+    ///
+    /// Available in both modes on purpose. In hotkey-only mode it is the only way to
+    /// correct; in automatic mode it is the fallback for the word the detector was not
+    /// confident enough about — which is most of the value, since the alternative is
+    /// retyping the word by hand.
+    @Published var correctWordHotkey: HotkeyBinding {
+        didSet {
+            defaults.set(correctWordHotkey.keyCode, forKey: "correctWordHotkeyKeyCode")
+            defaults.set(Int(bitPattern: correctWordHotkey.modifiers), forKey: "correctWordHotkeyModifiers")
+        }
+    }
+
     /// The global shortcut that converts the current selection. Default ⌃⇧X.
     ///
     /// Distinct from the undo shortcut on purpose: undo reverses what the app just did,
@@ -278,21 +330,32 @@ final class SettingsModel: ObservableObject {
 
         self.totalCorrections = defaults.object(forKey: "totalCorrections") as? Int ?? 0
 
-        let storedKeyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? 0x06 // 'Z'
+        let storedKeyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? DefaultHotkeys.undo.keyCode
         // Migrate the legacy "disabled" marker: 0 used to mean "no shortcut" (see
         // HotkeyBinding.isEnabled), so a stored 0 is a cleared binding, never the 'A' key.
         let keyCode = storedKeyCode == 0 ? -1 : storedKeyCode
         let storedMods = defaults.object(forKey: "undoHotkeyModifiers") as? Int
         let modifiers = storedMods.map { UInt(bitPattern: $0) }
-            ?? NSEvent.ModifierFlags([.control, .shift]).rawValue
+            ?? DefaultHotkeys.undo.modifiers
         self.undoHotkey = HotkeyBinding(keyCode: keyCode, modifiers: modifiers)
 
-        let storedSelectionKeyCode = defaults.object(forKey: "selectionHotkeyKeyCode") as? Int ?? 0x07 // 'X'
+        let storedSelectionKeyCode = defaults.object(forKey: "selectionHotkeyKeyCode") as? Int ?? DefaultHotkeys.selection.keyCode
         let selectionKeyCode = storedSelectionKeyCode == 0 ? -1 : storedSelectionKeyCode
         let storedSelectionMods = defaults.object(forKey: "selectionHotkeyModifiers") as? Int
         let selectionModifiers = storedSelectionMods.map { UInt(bitPattern: $0) }
-            ?? NSEvent.ModifierFlags([.control, .shift]).rawValue
+            ?? DefaultHotkeys.selection.modifiers
         self.selectionHotkey = HotkeyBinding(keyCode: selectionKeyCode, modifiers: selectionModifiers)
+
+        self.correctionMode = CorrectionMode(
+            rawValue: defaults.object(forKey: "correctionMode") as? Int ?? 0
+        ) ?? .automatic
+
+        let storedWordKeyCode = defaults.object(forKey: "correctWordHotkeyKeyCode") as? Int ?? DefaultHotkeys.correctWord.keyCode
+        let wordKeyCode = storedWordKeyCode == 0 ? -1 : storedWordKeyCode
+        let storedWordMods = defaults.object(forKey: "correctWordHotkeyModifiers") as? Int
+        let wordModifiers = storedWordMods.map { UInt(bitPattern: $0) }
+            ?? DefaultHotkeys.correctWord.modifiers
+        self.correctWordHotkey = HotkeyBinding(keyCode: wordKeyCode, modifiers: wordModifiers)
 
         if let data = defaults.data(forKey: "appRules"),
            let rules = try? JSONDecoder().decode([AppRule].self, from: data) {

@@ -38,6 +38,12 @@
 "hotkey.section" = "Undo Hotkey";
 "hotkey.selection.label" = "Convert selected text:";
 "hotkey.selection.hint" = "Select text anywhere, then press this shortcut to re-read it in the other layout.";
+"mode.label" = "Correction mode:";
+"mode.automatic" = "Automatic";
+"mode.hotkeyOnly" = "Only on shortcut";
+"mode.hint" = "In automatic mode words are corrected as you finish them. In shortcut mode nothing is corrected unless you ask.";
+"hotkey.correctWord.label" = "Correct last word:";
+"hotkey.correctWord.hint" = "Works in both modes — use it when a word was left uncorrected.";
 "hotkey.label" = "Undo last correction:";
 "hotkey.recording" = "Press keys… (Esc to cancel, ⌫ to disable)";
 "hotkey.hint" = "Press a key combination with at least one modifier (⌃ ⌥ ⇧ ⌘).";

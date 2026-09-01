@@ -207,6 +207,21 @@ struct GeneralTab: View {
             }
 
             Section {
+                Picker(L("mode.label"), selection: $settings.correctionMode) {
+                    ForEach(SettingsModel.CorrectionMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                Text(L("mode.hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HotkeyRecorderRow(labelKey: "hotkey.correctWord.label",
+                                  hotkey: $settings.correctWordHotkey)
+                Text(L("hotkey.correctWord.hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
                 HotkeyRecorderRow(labelKey: "hotkey.label", hotkey: $settings.undoHotkey)
                 HotkeyRecorderRow(labelKey: "hotkey.selection.label",
                                   hotkey: $settings.selectionHotkey)

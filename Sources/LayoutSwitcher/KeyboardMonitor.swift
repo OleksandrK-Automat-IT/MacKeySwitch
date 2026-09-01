@@ -44,6 +44,20 @@ final class KeyboardMonitor {
     /// Password shape of the current run of keystrokes, fed digits as well as letters.
     private var passwordHeuristic = PasswordHeuristic()
 
+    /// The word just finished, kept so the on-demand hotkey has something to act on after
+    /// the boundary has already emptied the buffer.
+    ///
+    /// Only valid while it is still the text immediately behind the caret, so it dies with
+    /// the buffer: the next keystroke, a click, an app switch, a layout change. After that
+    /// the hotkey acts on whatever is being typed now instead.
+    private struct CompletedWord {
+        let keystrokes: [Keystroke]
+        let layout: Language
+        /// Whether the boundary space actually printed — a dead key may have eaten it.
+        let boundaryReachedScreen: Bool
+    }
+    private var lastCompletedWord: CompletedWord?
+
     // Track the language when word started
     private var wordStartLayout: Language?
 
@@ -60,6 +74,9 @@ final class KeyboardMonitor {
     // Undo support: store original text and layout before correction
     private var lastOriginalText: String?
     private var lastOriginalLayout: Language?
+    /// Whether the last correction re-emitted the boundary space. An on-demand correction
+    /// fired mid-word does not, and undo must not erase a character that is not there.
+    private var lastCorrectionHadTrailingSpace = true
 
     // Manual layout switch detection: suppress auto-switch for first word after manual switch
     private var lastManualSwitchTime: Date?
@@ -361,7 +378,23 @@ final class KeyboardMonitor {
             if KeyMapping.correctionTriggerKeycodes.contains(keycode) {
                 // A pending dead key spends this space resolving itself, so no space
                 // reaches the screen and the correction must not count one.
-                maybeCorrect(currentLanguage: currentLang, boundaryReachedScreen: !bufferEndsWithDeadKey)
+                let boundaryReachedScreen = !bufferEndsWithDeadKey
+                let finished = CompletedWord(
+                    keystrokes: keyBuffer,
+                    layout: wordStartLayout ?? currentLang,
+                    boundaryReachedScreen: boundaryReachedScreen
+                )
+                var corrected = false
+                if settings?.correctionMode ?? .automatic == .automatic {
+                    corrected = maybeCorrect(currentLanguage: currentLang,
+                                             boundaryReachedScreen: boundaryReachedScreen)
+                }
+                resetBuffer()
+                // Assigned after resetBuffer, which clears it along with everything else.
+                // A word the app just corrected is not a candidate for correcting again —
+                // undo is the tool for that.
+                lastCompletedWord = (corrected || finished.keystrokes.isEmpty) ? nil : finished
+                return
             }
             resetBuffer()
             return
@@ -445,7 +478,8 @@ final class KeyboardMonitor {
         // A correction types the word *and* a trailing space, so erasing the word takes
         // count + 1 backspaces. Comparing against count alone fired one keystroke early,
         // while a letter was still on screen.
-        guard backspaceCountAfterCorrection >= lastWord.count + 1 else { return }
+        let erasedLength = lastWord.count + (lastCorrectionHadTrailingSpace ? 1 : 0)
+        guard backspaceCountAfterCorrection >= erasedLength else { return }
 
         // Record only the corrected form — keeps the exception list free of the
         // gibberish wrong-layout twins.
@@ -472,23 +506,24 @@ final class KeyboardMonitor {
     ///
     /// `boundaryReachedScreen` is false when the triggering space was spent resolving a
     /// pending dead key instead of printing: there is no space behind the caret to erase.
-    private func maybeCorrect(currentLanguage: Language, boundaryReachedScreen: Bool) {
+    @discardableResult
+    private func maybeCorrect(currentLanguage: Language, boundaryReachedScreen: Bool) -> Bool {
         if skipCurrentWordCorrection {
             debugLog("[LayoutSwitcher] Skipped correction for this word (manual layout switch)")
-            return
+            return false
         }
 
         let minLen = settings?.minWordLength ?? 2
         guard keyBuffer.count >= minLen,
               !isCorrecting,
-              !passwordHeuristic.looksLikePassword else { return }
+              !passwordHeuristic.looksLikePassword else { return false }
 
         // The heuristic above only guesses from the shape of the characters. Ask the
         // system what the field actually is before rewriting anything into it; `.unknown`
         // counts as unsafe, since the cost of being wrong is a mangled credential.
         guard SecureInputDetector.current() == .notSecure else {
             debugLog("[LayoutSwitcher] Skipped correction: secure or unknown input field")
-            return
+            return false
         }
 
         let layout = wordStartLayout ?? currentLanguage
@@ -499,7 +534,7 @@ final class KeyboardMonitor {
         // other word. Rewriting one breaks a link the user is about to use.
         if WordFilter.shouldSkip(KeyMapping.reconstruct(keycodes: buffer, language: layout)) {
             debugLog("[LayoutSwitcher] Skipped correction: looks like a URL, email or identifier")
-            return
+            return false
         }
         let threshold = settings?.sensitivity.scoreThreshold
             ?? SettingsModel.Sensitivity.medium.scoreThreshold
@@ -516,7 +551,7 @@ final class KeyboardMonitor {
             threshold: threshold,
             settings: settings
         ) else {
-            return
+            return false
         }
 
         let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
@@ -544,6 +579,7 @@ final class KeyboardMonitor {
                 notify: notify
             )
         }
+        return true
     }
 
     // MARK: - Correction
@@ -552,6 +588,7 @@ final class KeyboardMonitor {
         correctText: String,
         originalText: String,
         deleteCount: Int,
+        restoreBoundarySpace: Bool = true,
         from: Language,
         to: Language,
         delayMs: Int,
@@ -607,7 +644,9 @@ final class KeyboardMonitor {
 
         // Retype correct text
         let typedFully = typeString(correctText)
-        simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
+        if restoreBoundarySpace {
+            simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
+        }
 
         // Publish post-correction state on main, under the lock, so handleEvent
         // never observes a torn view of these fields. The undo snapshot is recorded
@@ -620,6 +659,7 @@ final class KeyboardMonitor {
             self.stateLock.lock()
             self._isCorrecting = false
             if typedFully {
+                self.lastCorrectionHadTrailingSpace = restoreBoundarySpace
                 self.lastCorrectedWord = correctText
                 self.lastCorrectionTime = now
                 self.lastOriginalText = originalText
@@ -636,6 +676,76 @@ final class KeyboardMonitor {
         }
     }
 
+    /// Convert the last word on demand, whatever the detector thought of it.
+    ///
+    /// Deliberately skips the confidence score. The score exists to decide whether to act
+    /// *unasked*; here the user has asked, and refusing because a dictionary is thin would
+    /// leave them retyping the word by hand — the very thing this replaces. The guards that
+    /// remain are the ones about safety rather than confidence: never type into a password
+    /// field, and never act on a stale snapshot.
+    ///
+    /// Acts on the word being typed when there is one, otherwise on the word just finished.
+    /// That snapshot dies with the buffer, so once the caret has moved on there is nothing
+    /// to act on rather than something wrong.
+    func correctLastWordOnDemand() {
+        guard !isCorrecting else { return }
+
+        guard SecureInputDetector.current() == .notSecure else {
+            debugLog("[LayoutSwitcher] On-demand correction skipped: secure or unknown field")
+            return
+        }
+
+        let keystrokes: [Keystroke]
+        let layout: Language
+        let boundaryReachedScreen: Bool
+
+        if !keyBuffer.isEmpty {
+            // Mid-word: no boundary space has been typed yet, so none is behind the caret.
+            keystrokes = keyBuffer
+            layout = wordStartLayout ?? cachedLayout ?? .english
+            boundaryReachedScreen = false
+        } else if let finished = lastCompletedWord {
+            keystrokes = finished.keystrokes
+            layout = finished.layout
+            boundaryReachedScreen = finished.boundaryReachedScreen
+        } else {
+            debugLog("[LayoutSwitcher] Nothing to correct on demand")
+            return
+        }
+
+        guard !keystrokes.isEmpty else { return }
+
+        let target = layout.opposite
+        let originalText = KeyMapping.reconstruct(keycodes: keystrokes, language: layout)
+        let correctText = KeyMapping.reconstruct(keycodes: keystrokes, language: target)
+        guard originalText != correctText else { return }
+
+        stateLock.lock()
+        _isCorrecting = true
+        _correctionContextDirty = false
+        stateLock.unlock()
+
+        // The word is being replaced wherever it sits, so the buffer no longer describes
+        // what is on screen either way.
+        resetBuffer()
+
+        let deleteCount = originalText.count + (boundaryReachedScreen ? 1 : 0)
+        let delayMs = settings?.correctionDelayMs ?? 50
+        let notify = settings?.showNotifications ?? false
+
+        correctionQueue.async { [weak self] in
+            self?.performCorrection(
+                correctText: correctText,
+                originalText: originalText,
+                deleteCount: deleteCount,
+                from: layout,
+                to: target,
+                delayMs: delayMs,
+                notify: notify
+            )
+        }
+    }
+
     // MARK: - Undo Last Correction
 
     /// Undo the last auto-correction: delete the corrected word, switch back, retype original.
@@ -645,6 +755,7 @@ final class KeyboardMonitor {
         let originalLayoutOpt = lastOriginalLayout
         let correctionTimeOpt = lastCorrectionTime
         let correctedFormOpt = lastCorrectedWord
+        let hadTrailingSpace = lastCorrectionHadTrailingSpace
         let busy = _isCorrecting
         stateLock.unlock()
 
@@ -675,7 +786,7 @@ final class KeyboardMonitor {
 
             // Erase the corrected word and its trailing space. Counted, not selected —
             // see performCorrection for why word selection cannot be trusted here.
-            self.deleteBackward(characters: correctedForm.count + 1)
+            self.deleteBackward(characters: correctedForm.count + (hadTrailingSpace ? 1 : 0))
             usleep(delayUs)
 
             // Switch back to original layout (TIS APIs must run on main thread)
@@ -687,7 +798,9 @@ final class KeyboardMonitor {
 
             // Retype original text + space
             self.typeString(originalText)
-            self.simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
+            if hadTrailingSpace {
+                self.simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
+            }
             usleep(5_000)
 
             DispatchQueue.main.async {
@@ -713,6 +826,7 @@ final class KeyboardMonitor {
 
     /// Full reset at a word boundary, or when the caret has moved somewhere unknown.
     private func resetBuffer() {
+        lastCompletedWord = nil
         keyBuffer.removeAll()
         wordStartLayout = nil
         skipCurrentWordCorrection = false
@@ -724,6 +838,7 @@ final class KeyboardMonitor {
     /// that print a character the buffer cannot represent, or that move the caret, without
     /// ending the word the user is typing.
     private func invalidateBuffer() {
+        lastCompletedWord = nil
         keyBuffer.removeAll()
         wordStartLayout = nil
         bufferEndsWithDeadKey = false
