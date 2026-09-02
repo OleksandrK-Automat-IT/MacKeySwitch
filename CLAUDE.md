@@ -56,6 +56,8 @@ The package root *is* the repository root; there is no wrapping directory.
 │   │   ├── LanguageDetector.swift
 │   │   ├── SettingsView.swift
 │   │   ├── Logging.swift
+│   │   ├── CorrectionEngine.swift      # Every decision: buffer, when to correct, undo, on-demand
+│   │   ├── KeyboardMonitor.swift       # The machinery: event tap, threads, synthetic keys
 │   │   ├── CarbonHotkey.swift
 │   │   ├── Localization.swift
 │   │   ├── SecureInputDetector.swift   # Password fields, via AX subrole + secure input flag
@@ -187,6 +189,9 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 
 ### Testing
 - Use `TestSupport.swift` for common fixtures (mock dicts, test strings)
+- `CorrectionEngineTests` drives the whole decision logic with a scripted keyboard and a
+  fake environment (layout, dead keys, secure input, clock). Anything the monitor decides
+  is testable there; if a bug is found in KeyboardMonitor itself, it belongs in the engine
 - `DictionaryCoverageTests` documents bundled dictionary gaps
 - `LocalizationTests` prevents runtime crashes from missing keys/format mismatches
 - Password heuristic is extensively tested (edge cases matter)

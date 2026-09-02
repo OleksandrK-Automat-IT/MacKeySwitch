@@ -185,7 +185,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] enabled in
                 guard let self = self else { return }
-                self.monitor.isEnabled = enabled
                 self.enableMenuItem?.state = enabled ? .on : .off
                 self.updateLayoutIcon()
             }

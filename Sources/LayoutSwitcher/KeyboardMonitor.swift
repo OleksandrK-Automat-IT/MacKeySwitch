@@ -18,9 +18,10 @@ private func eventTapCallback(
     return Unmanaged.passUnretained(event)
 }
 
+/// The machinery around `CorrectionEngine`: the event tap, the cross-thread flags, and the
+/// synthetic keystrokes that carry out a plan. Every *decision* is the engine's.
 final class KeyboardMonitor {
     /// Set by AppDelegate once the notification authorization request resolves.
-    /// Defaults to false until then — prevents any UN call on first run.
     var notificationsAvailable: Bool = false
 
     /// Stamped into every event this app posts, and checked in the tap callback.
@@ -30,111 +31,28 @@ final class KeyboardMonitor {
     /// character used to look like a fresh letter keystroke.
     static let syntheticEventMarker: Int64 = 0x4D4B_5357 // 'MKSW'
 
+    let engine: CorrectionEngine
+
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
 
-    /// The contiguous run of reconstructable characters immediately before the caret.
-    ///
-    /// The correction erases that run with a counted run of backspaces, so the buffer must
-    /// never claim more (or fewer) characters than are actually on screen. Anything that
-    /// breaks the correspondence — a digit, a '-', an arrow key, a mouse click — empties it
-    /// rather than silently desynchronising it. See `invalidateBuffer`.
-    private var keyBuffer: [Keystroke] = []
-
-    /// Password shape of the current run of keystrokes, fed digits as well as letters.
-    private var passwordHeuristic = PasswordHeuristic()
-
-    /// The word just finished, kept so the on-demand hotkey has something to act on after
-    /// the boundary has already emptied the buffer.
-    ///
-    /// Only valid while it is still the text immediately behind the caret, so it dies with
-    /// the buffer: the next keystroke, a click, an app switch, a layout change. After that
-    /// the hotkey acts on whatever is being typed now instead.
-    private struct CompletedWord {
-        let keystrokes: [Keystroke]
-        let layout: Language
-        /// Whether the boundary space actually printed — a dead key may have eaten it.
-        let boundaryReachedScreen: Bool
-        let finishedAt: Date
-    }
-
-    /// How long a finished word stays eligible for the on-demand shortcut. Matches undo's
-    /// window: past it, the odds that the text is still behind the caret are not worth the
-    /// cost of being wrong.
-    private static let completedWordLifetime: TimeInterval = 10.0
-    private var lastCompletedWord: CompletedWord?
-
-    // Track the language when word started
-    private var wordStartLayout: Language?
-
-    var isEnabled: Bool = true
-
-    // Serial queue for corrections
+    /// Serial queue for typing out plans.
     private let correctionQueue = DispatchQueue(label: "com.layoutswitcher.correction")
 
-    // Self-learning: track last correction for undo detection
-    private var lastCorrectedWord: String?
-    private var lastCorrectionTime: Date?
-    private var backspaceCountAfterCorrection: Int = 0
-
-    // Undo support: store original text and layout before correction
-    private var lastOriginalText: String?
-    private var lastOriginalLayout: Language?
-    /// Whether the last correction re-emitted the boundary space. An on-demand correction
-    /// fired mid-word does not, and undo must not erase a character that is not there.
-    private var lastCorrectionHadTrailingSpace = true
-
-    // Manual layout switch detection: suppress auto-switch for first word after manual switch
-    private var lastManualSwitchTime: Date?
-    /// Set at word-start when manual switch was recent; forces the current word to skip correction.
-    private var skipCurrentWordCorrection: Bool = false
-
-    /// When this app last selected an input source itself. The layout-change notification
-    /// arrives asynchronously and can land after `isCorrecting` has already been cleared,
-    /// at which point the app's own switch reads as the user's and suppresses the next
-    /// word. A short window closes that race; `isCorrecting` alone could not.
-    private var lastSelfSwitchTime: Date?
-    private static let selfSwitchGrace: TimeInterval = 1.0
-
-    /// Layout and frontmost app, cached rather than queried per keystroke.
-    ///
-    /// `TISCopyCurrentKeyboardInputSource` and `NSWorkspace.frontmostApplication` are both
-    /// cross-process calls, and this runs on the main thread inside an event tap callback —
-    /// where piling up work invites `tapDisabledByTimeout`. Both values change only on a
-    /// notification the app already receives.
-    private var cachedLayout: Language?
-    private var cachedFrontmostBundleID: String?
-
-    /// What the current layout's dead keys do. Cached alongside the layout, and refreshed
-    /// with it — probing costs a UCKeyTranslate per buffered key, which is far too much for
-    /// an event-tap callback.
-    private var cachedDeadKeys = InputSourceManager.DeadKeyProfile()
-
-    /// The last buffered key was a dead key, so it has put nothing on screen yet. The
-    /// boundary space will resolve it into one character and be consumed doing so, which
-    /// is why the correction must not count a trailing space it can see on screen.
-    private var bufferEndsWithDeadKey = false
-
-    // Max buffer length — prevents unbounded growth in long URL/password fields
-    private let maxBufferLength = 64
-
-    // Lock for fields shared between main (handleEvent) and correctionQueue (performCorrection)
+    /// Guards the two flags shared between the main thread and `correctionQueue`.
     private let stateLock = NSLock()
 
-    /// True while a correction is being typed. Written on `correctionQueue`, read on the
-    /// main thread from `handleEvent`, so every access goes through the lock. Callers must
-    /// not already hold `stateLock` — NSLock is not recursive.
+    /// True while a plan is being typed. Written on `correctionQueue`, read on the main
+    /// thread, so every access goes through the lock. NSLock is not recursive.
     private var _isCorrecting: Bool = false
     private var isCorrecting: Bool {
         get { stateLock.lock(); defer { stateLock.unlock() }; return _isCorrecting }
-        set { stateLock.lock(); _isCorrecting = newValue; stateLock.unlock() }
     }
 
-    /// Set when anything invalidates a correction after it was claimed but before its
-    /// backspaces went out: a real keystroke, a switch to another app, or a manual layout
-    /// change. In each case the snapshot of "text behind the caret" is stale, and the
-    /// backspaces would land on text the plan does not describe — in another app's window,
-    /// in the worst case. The correction aborts instead.
+    /// Set when anything invalidates a plan after it was claimed but before its backspaces
+    /// went out: a real keystroke, or a switch to another app. The snapshot of "text behind
+    /// the caret" is stale then, and the backspaces would land on text the plan does not
+    /// describe — in another app's window, in the worst case. The plan aborts instead.
     private var _correctionContextDirty: Bool = false
 
     /// Re-enables a tap the window server disabled (timeout, or Accessibility revoked and
@@ -142,7 +60,9 @@ final class KeyboardMonitor {
     /// latter — the callback never fires again — so this runs on a timer.
     private var tapHealthTimer: Timer?
 
-    var settings: SettingsModel?
+    var settings: SettingsModel? {
+        didSet { engine.settings = settings ?? Self.noSettings }
+    }
 
     /// Whether the event tap is installed — false until Accessibility is granted.
     var isRunning: Bool { eventTap != nil }
@@ -151,6 +71,27 @@ final class KeyboardMonitor {
     /// menu-bar flag hangs off this rather than waiting for the distributed notification,
     /// which is late often enough to leave the flag showing the previous layout.
     var onSelfInitiatedLayoutSwitch: (() -> Void)?
+
+    init() {
+        engine = CorrectionEngine(
+            environment: LiveCorrectionEnvironment(),
+            settings: Self.noSettings,
+            dictionary: DictionaryManager.shared
+        )
+    }
+
+    /// What the engine runs against before AppDelegate hands over the real model.
+    private struct NoSettings: CorrectionSettings {
+        let isEnabled = true
+        let minWordLength = 2
+        let scoreThreshold = SettingsModel.Sensitivity.medium.scoreThreshold
+        let correctionMode = SettingsModel.CorrectionMode.automatic
+        func isAppExcluded(bundleID: String) -> Bool { false }
+        func isException(_ word: String) -> Bool { false }
+    }
+    private static let noSettings = NoSettings()
+
+    // MARK: - Lifecycle
 
     func start() {
         guard eventTap == nil else { return }
@@ -163,11 +104,10 @@ final class KeyboardMonitor {
         }
 
         if let settings = settings {
-            // Asynchronous on purpose. These three used to run synchronously here, and
-            // with the user's 600k-word custom files that was ~400ms of blocked main
-            // thread at every launch. The bundled lists are already in place from
-            // DictionaryManager.init, so the first corrections work on those while the
-            // custom words arrive a moment later.
+            // Asynchronous on purpose: with the user's 600k-word custom files this was
+            // ~400ms of blocked main thread at every launch. The bundled lists are already
+            // in place from DictionaryManager.init, so the first corrections work on those
+            // while the custom words arrive a moment later.
             DictionaryManager.shared.rebuildAsync(
                 customEnglishWords: settings.customEnglishWords,
                 customUkrainianWords: settings.customUkrainianWords,
@@ -176,10 +116,7 @@ final class KeyboardMonitor {
             )
         }
 
-        // Seed the caches the tap callback reads. From here on they are notification-driven.
-        cachedLayout = InputSourceManager.currentLanguage()
-        cachedDeadKeys = InputSourceManager.deadKeyProfile()
-        cachedFrontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        engine.seedCaches(frontmostBundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier)
 
         // Mouse clicks move the caret without producing a keystroke, which would leave the
         // buffer describing a run of text that is no longer in front of the caret.
@@ -234,74 +171,37 @@ final class KeyboardMonitor {
         }
         eventTap = nil
         runLoopSource = nil
-        resetBuffer()
     }
 
     deinit {
         stop()
     }
 
-    /// Read the live layout, refreshing the cache with it. Called once per word.
-    ///
-    /// The dead-key profile is re-probed only when the layout actually changed: probing
-    /// costs a `UCKeyTranslate` per key, which is far too much to repeat for every word.
-    private func confirmedLayout() -> Language? {
-        let live = InputSourceManager.currentLanguage()
-        if live != cachedLayout {
-            cachedLayout = live
-            cachedDeadKeys = InputSourceManager.deadKeyProfile()
-        }
-        return live
-    }
-
     // MARK: - Cache updates (pushed by AppDelegate's system observers)
 
-    /// The selected keyboard layout changed. Refreshes the cache and, when the change came
-    /// from the user rather than from this app, suppresses the next word's correction.
     func layoutDidChange() {
-        cachedLayout = InputSourceManager.currentLanguage()
-        cachedDeadKeys = InputSourceManager.deadKeyProfile()
-
-        let selfSwitchedRecently = lastSelfSwitchTime.map {
-            Date().timeIntervalSince($0) < Self.selfSwitchGrace
-        } ?? false
-        guard !isCorrecting, !selfSwitchedRecently else { return }
-
-        lastManualSwitchTime = Date()
-        // The run in front of the caret was typed in the previous layout; it can no longer
-        // be reconstructed as one word.
-        resetBuffer()
-        debugLog("[LayoutSwitcher] Manual layout switch detected, suppressing next word")
+        engine.layoutDidChange(isCorrecting: isCorrecting)
     }
 
-    /// Record that this app is about to change the input source, so the notification it
-    /// causes is not read as the user switching layout by hand — which would suppress the
-    /// next word's correction for no reason.
     func noteSelfInitiatedLayoutSwitch() {
-        lastSelfSwitchTime = Date()
+        engine.noteSelfInitiatedLayoutSwitch()
     }
 
-    /// The frontmost application changed. The caret is now somewhere else entirely.
-    /// The undo snapshot describes text in the *previous* app; firing the undo hotkey
-    /// here would erase unrelated text, so the snapshot must die with the context.
     func frontmostAppDidChange(bundleID: String?) {
-        cachedFrontmostBundleID = bundleID
-        // A queued correction was planned against the previous app's caret. No keystroke
+        // A queued plan was made against the previous app's caret. No keystroke
         // accompanies an app switch, so without this the backspaces would be delivered to
         // whatever the user just switched to.
         markCorrectionContextDirty()
-        resetBuffer()
-        clearCorrectionSnapshot()
+        engine.frontmostAppDidChange(bundleID: bundleID)
     }
 
-    /// Invalidate a correction that has been claimed but not yet typed.
     private func markCorrectionContextDirty() {
         stateLock.lock()
         if _isCorrecting { _correctionContextDirty = true }
         stateLock.unlock()
     }
 
-    // MARK: - Event Handling
+    // MARK: - Event decoding
 
     func handleEvent(type: CGEventType, event: CGEvent) {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -311,12 +211,8 @@ final class KeyboardMonitor {
             return
         }
 
-        // A click can put the caret anywhere. Whatever the buffer described is no longer
-        // the text immediately behind it — and neither is the undo snapshot, whose
-        // counted backspaces would land wherever the caret is now.
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
-            resetBuffer()
-            clearCorrectionSnapshot()
+            _ = engine.handle(.mouseDown, isCorrecting: isCorrecting)
             return
         }
 
@@ -327,356 +223,79 @@ final class KeyboardMonitor {
             return
         }
 
-        // A real keystroke while a correction is queued or typing means the caret text no
-        // longer matches the snapshot the correction was built from. performCorrection
-        // checks this flag once more before its first backspace and aborts.
-        stateLock.lock()
-        if _isCorrecting { _correctionContextDirty = true }
-        stateLock.unlock()
-
-        let effectiveEnabled = settings?.isEnabled ?? isEnabled
-        guard effectiveEnabled else { return }
-
-        // Never buffer anything typed into a password field. This is the system-wide flag
-        // only — a cheap read, safe per keystroke. The costlier accessibility query runs
-        // once per word, at the boundary.
-        if SecureInputDetector.isSystemSecureInputEnabled {
-            resetBuffer()
-            return
-        }
+        // A real keystroke while a plan is queued or typing means the caret text no longer
+        // matches the snapshot it was built from. The typing checks this once more before
+        // its first backspace and aborts.
+        markCorrectionContextDirty()
 
         let flags = event.flags
+        let input = InputEvent.keyDown(
+            keycode: UInt16(event.getIntegerValueField(.keyboardEventKeycode)),
+            shift: flags.contains(.maskShift),
+            capsLock: flags.contains(.maskAlphaShift),
+            command: flags.contains(.maskCommand),
+            control: flags.contains(.maskControl),
+            option: flags.contains(.maskAlternate)
+        )
 
-        // Skip hotkeys
-        if flags.contains(.maskCommand) || flags.contains(.maskControl) || flags.contains(.maskAlternate) {
-            // The snapshot of the finished word survives the chord. A chord prints nothing,
-            // so that word is still behind the caret — and one of these chords *is* the
-            // shortcut asking to correct it. Clearing it here made the on-demand correction
-            // unable to ever find anything: the tap sees the chord before the hotkey fires.
-            // Staleness is bounded by `completedWordLifetime` rather than by this reset.
-            let finished = lastCompletedWord
-            resetBuffer()
-            lastCompletedWord = finished
-            return
-        }
-
-        // Per-app exclusion
-        if let settings = settings,
-           let bundleID = cachedFrontmostBundleID,
-           settings.isAppExcluded(bundleID: bundleID) {
-            resetBuffer()
-            return
-        }
-
-        // Only monitor EN or UA layouts
-        guard let currentLang = cachedLayout else {
-            resetBuffer()
-            return
-        }
-
-        let keycode = UInt16(event.getIntegerValueField(.keyboardEventKeycode))
-        let isShifted = flags.contains(.maskShift)
-        let capsLock = flags.contains(.maskAlphaShift)
-
-        // --- Self-learning: detect undo pattern ---
-        // If user presses backspace right after a correction, they're undoing it
-        if keycode == KeyMapping.backspaceKeycode {
-            handleBackspaceAfterCorrection()
-
-            // Backspacing over a pending dead key cancels it rather than deleting a
-            // character, so the buffer and the screen no longer agree on the count.
-            if bufferEndsWithDeadKey {
-                invalidateBuffer()
-                passwordHeuristic.removeLast()
-                return
-            }
-
-            // Shrink buffer
-            if !keyBuffer.isEmpty {
-                keyBuffer.removeLast()
-            }
-            passwordHeuristic.removeLast()
-            if keyBuffer.isEmpty {
-                wordStartLayout = nil
-            }
-            // Keyed on the heuristic's own count, not the buffer's: the buffer also empties
-            // when an unbufferable key arrives, and "Ab12" is still one run at that point.
-            if passwordHeuristic.printableCount == 0 {
-                passwordHeuristic.reset()
-            }
-            return
-        }
-
-        // Any non-backspace key clears the undo tracking AND the undo-target snapshot.
-        // Otherwise the undo hotkey 2 words later would erase the wrong word and replace
-        // it with the previous correction's original text.
-        clearCorrectionSnapshot()
-
-        // Word boundary — perform correction here (never mid-word)
-        if KeyMapping.wordBoundaryKeycodes.contains(keycode) {
-            if KeyMapping.correctionTriggerKeycodes.contains(keycode) {
-                // A pending dead key spends this space resolving itself, so no space
-                // reaches the screen and the correction must not count one.
-                let boundaryReachedScreen = !bufferEndsWithDeadKey
-                let finished = CompletedWord(
-                    keystrokes: keyBuffer,
-                    layout: wordStartLayout ?? currentLang,
-                    boundaryReachedScreen: boundaryReachedScreen,
-                    finishedAt: Date()
-                )
-                var corrected = false
-                if settings?.correctionMode ?? .automatic == .automatic {
-                    corrected = maybeCorrect(currentLanguage: currentLang,
-                                             boundaryReachedScreen: boundaryReachedScreen)
-                }
-                resetBuffer()
-                // Assigned after resetBuffer, which clears it along with everything else.
-                // A word the app just corrected is not a candidate for correcting again —
-                // undo is the tool for that.
-                lastCompletedWord = (corrected || finished.keystrokes.isEmpty) ? nil : finished
-                return
-            }
-            resetBuffer()
-            return
-        }
-
-        // Feed the password heuristic before the letter-only guard below. Doing it after
-        // meant the digit and symbol flags could never be set — those keys are not letter
-        // keys — so the heuristic never fired at all.
-        passwordHeuristic.record(keycode: keycode, isShifted: isShifted, capsLock: capsLock)
-
-        // Everything that is not a buffered letter key breaks the buffer's correspondence
-        // with the screen, and has to empty it rather than be ignored:
-        //
-        //   * digits and '-', '=', '\', '/' print a character that is never buffered, so
-        //     the backspace count would come up short. "ghbdsn123 " used to erase seven
-        //     characters from a ten-character run and leave "ghbdпривіт ".
-        //   * arrows, Home/End, forward-delete and Esc move the caret or the text around
-        //     it, so the buffered run is no longer what sits behind the caret.
-        //
-        // Emptying is not the same as resetting: the password heuristic keeps running,
-        // because "Ab12cd" is one run of keystrokes even though the digits never buffer.
-        guard KeyMapping.isLetterKey(keycode) else {
-            invalidateBuffer()
-            return
-        }
-
-        // A dead key prints nothing until the next keystroke resolves it, and what the two
-        // then produce is not something the static map can predict: on US International
-        // "'" + "e" is one character (é), "'" + "'" is one ('), "'" + "." is two ('.).
-        // Only one case stays reconstructable — the dead key ending the word, resolved by
-        // the boundary space into exactly the character the map claims (verified per
-        // layout in `deadKeyProfile`). Then the word on screen is intact and only the
-        // space is missing, which `boundaryReachedScreen` tells the correction about.
-        if bufferEndsWithDeadKey {
-            invalidateBuffer()
-            return
-        }
-        if cachedDeadKeys.dead.contains(keycode) {
-            guard cachedDeadKeys.resolvedByBoundary.contains(keycode) else {
-                invalidateBuffer()
-                return
-            }
-            bufferEndsWithDeadKey = true
-        }
-
-        // Track layout at word start. The manual-switch suppression is consumed here —
-        // when a letter actually starts a word — not on any first key: a bare space after
-        // the switch used to eat the flag and leave the *next* word unprotected.
-        if keyBuffer.isEmpty {
-            if let manualTime = lastManualSwitchTime {
-                if Date().timeIntervalSince(manualTime) < 2.0 {
-                    skipCurrentWordCorrection = true
-                }
-                lastManualSwitchTime = nil
-            }
-            // Confirm the layout with the system instead of trusting the cache.
-            //
-            // The cache is fed by a distributed notification, which arrives late often
-            // enough to matter — most reliably right after the app's own switch at the end
-            // of a correction, which is exactly when the next word begins. A word
-            // attributed to the previous layout reconstructs as gibberish, that gibberish
-            // matches the other layout's dictionary, and the "correction" retypes the text
-            // already on screen. Undo then replaces the real word with the gibberish the
-            // app believed was there.
-            //
-            // Once per word is the same frequency as the dictionary lookup this path
-            // already performs, and nowhere near the per-keystroke cost the cache exists
-            // to avoid.
-            guard let live = confirmedLayout() else {
-                // The cache said English or Ukrainian; the system says neither. That
-                // happens when the user switched to a third layout and its notification
-                // has not landed yet. Buffering this word under the stale layout would
-                // reconstruct a Russian (say) word as English gibberish, match the other
-                // dictionary, and rewrite text inside a field the app does not handle.
-                invalidateBuffer()
-                return
-            }
-            wordStartLayout = live
-        }
-
-        keyBuffer.append(Keystroke(keycode: keycode, shift: isShifted, capsLock: capsLock))
-
-        // Cap buffer length — avoids unbounded growth in fields without spaces (URLs, passwords)
-        if keyBuffer.count > maxBufferLength {
-            // Treat as non-word — reset quietly, user is probably typing something structural.
-            resetBuffer()
+        switch engine.handle(input, isCorrecting: isCorrecting) {
+        case .nothing:
+            break
+        case .correct(let plan):
+            run(plan, kind: .correction)
+        case .learnException(let word):
+            settings?.addException(word)
         }
     }
 
-    /// Count backspaces immediately after a correction. Enough of them to wipe the word
-    /// means the user rejected it, so it becomes an exception.
-    private func handleBackspaceAfterCorrection() {
-        stateLock.lock()
-        let word = lastCorrectedWord
-        let time = lastCorrectionTime
-        stateLock.unlock()
+    // MARK: - Shortcuts
 
-        guard let lastWord = word, let lastTime = time,
-              Date().timeIntervalSince(lastTime) < 5.0 else { return }
-
-        backspaceCountAfterCorrection += 1
-
-        // A correction types the word *and* a trailing space, so erasing the word takes
-        // count + 1 backspaces. Comparing against count alone fired one keystroke early,
-        // while a letter was still on screen.
-        let erasedLength = lastWord.count + (lastCorrectionHadTrailingSpace ? 1 : 0)
-        guard backspaceCountAfterCorrection >= erasedLength else { return }
-
-        // Record only the corrected form — keeps the exception list free of the
-        // gibberish wrong-layout twins.
-        settings?.addException(lastWord)
-        clearCorrectionSnapshot()
+    func correctLastWordOnDemand() {
+        guard let plan = engine.onDemandPlan(isCorrecting: isCorrecting) else { return }
+        run(plan, kind: .correction)
     }
 
-    private func clearCorrectionSnapshot() {
-        stateLock.lock()
-        let hadSnapshot = lastCorrectedWord != nil || lastOriginalText != nil
-        if hadSnapshot {
-            lastCorrectedWord = nil
-            lastCorrectionTime = nil
-            lastOriginalText = nil
-            lastOriginalLayout = nil
+    func undoLastCorrection() {
+        guard let plan = engine.undoPlan(isCorrecting: isCorrecting) else {
+            print("[LayoutSwitcher] Nothing to undo")
+            return
         }
-        stateLock.unlock()
-        if hadSnapshot {
-            backspaceCountAfterCorrection = 0
-        }
+        run(plan, kind: .undo)
     }
 
-    /// Decide whether the just-finished word should be retyped in the other layout.
-    ///
-    /// `boundaryReachedScreen` is false when the triggering space was spent resolving a
-    /// pending dead key instead of printing: there is no space behind the caret to erase.
-    @discardableResult
-    private func maybeCorrect(currentLanguage: Language, boundaryReachedScreen: Bool) -> Bool {
-        if skipCurrentWordCorrection {
-            debugLog("[LayoutSwitcher] Skipped correction for this word (manual layout switch)")
-            return false
-        }
+    // MARK: - Executing a plan
 
-        let minLen = settings?.minWordLength ?? 2
-        guard keyBuffer.count >= minLen,
-              !isCorrecting,
-              !passwordHeuristic.looksLikePassword else { return false }
+    private enum PlanKind {
+        /// A correction: records an undo snapshot and counts toward statistics.
+        case correction
+        /// Reverses the last correction: clears the snapshot, remembers the word.
+        case undo
+    }
 
-        let layout = wordStartLayout ?? currentLanguage
-        let buffer = keyBuffer
-
-        // Belt and braces on the same hazard the word-start confirmation addresses: if the
-        // system disagrees about the layout now, the buffer does not describe what is on
-        // screen, and correcting it would replace real text with a reconstruction of text
-        // that was never typed. A missed correction is the cheap outcome here.
-        // Unknown counts as changed: nil means the system reports a layout this app does
-        // not handle, and the buffer cannot describe what such a layout put on screen.
-        guard let live = confirmedLayout(), live == layout else {
-            debugLog("[LayoutSwitcher] Skipped correction: layout changed under the word")
-            return false
-        }
-
-        // URLs, emails and identifiers read as ordinary words to the detector — several
-        // US-layout punctuation keys are Ukrainian letters, so "ok.ua" buffers like any
-        // other word. Rewriting one breaks a link the user is about to use.
-        if WordFilter.shouldSkip(KeyMapping.reconstruct(keycodes: buffer, language: layout)) {
-            debugLog("[LayoutSwitcher] Skipped correction: looks like a URL, email or identifier")
-            return false
-        }
-        let threshold = settings?.sensitivity.scoreThreshold
-            ?? SettingsModel.Sensitivity.medium.scoreThreshold
-        let delayMs = settings?.correctionDelayMs ?? 10
-        let notify = settings?.showNotifications ?? false
-
-        // Detection runs here, on the main thread, rather than on the correction queue.
-        // It consults NSSpellChecker, which belongs to AppKit's main thread, and a lookup
-        // costs ~0.13ms — cheap enough for a word boundary. Deciding before dispatching
-        // also lets the correction slot be claimed synchronously, below.
-        guard let intended = LanguageDetector.detectIntended(
-            keycodes: buffer,
-            currentLayout: layout,
-            threshold: threshold,
-            settings: settings
-        ) else {
-            return false
-        }
-
-        // The password check is the one expensive guard — an accessibility round trip to
-        // the frontmost app — so it runs last, only for a word that is actually about to be
-        // rewritten. Most boundaries never get here. The heuristic above is the cheap
-        // first pass; this is the system's answer.
-        guard SecureInputDetector.current() == .notSecure else {
-            debugLog("[LayoutSwitcher] Skipped correction: password field")
-            return false
-        }
-
-        let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
-        let originalText = KeyMapping.reconstruct(keycodes: buffer, language: layout)
-
-        // Claim the slot before leaving the main thread. Setting it inside performCorrection
-        // left a window in which a second word boundary could start a second correction
-        // while the first was still queued.
+    private func run(_ plan: CorrectionPlan, kind: PlanKind) {
+        // Claim the slot before leaving the main thread, so a second word boundary that
+        // arrives while this plan is queued cannot start a second one.
         stateLock.lock()
         _isCorrecting = true
         _correctionContextDirty = false
         stateLock.unlock()
 
-        // The word, plus the trailing space when one actually reached the screen.
-        let deleteCount = originalText.count + (boundaryReachedScreen ? 1 : 0)
+        let delayMs = settings?.correctionDelayMs ?? 10
+        let notify = kind == .correction && (settings?.showNotifications ?? false)
 
         correctionQueue.async { [weak self] in
-            self?.performCorrection(
-                correctText: correctText,
-                originalText: originalText,
-                deleteCount: deleteCount,
-                from: layout,
-                to: intended,
-                delayMs: delayMs,
-                notify: notify
-            )
+            self?.perform(plan, kind: kind, delayMs: delayMs, notify: notify)
         }
-        return true
     }
 
-    // MARK: - Correction
-
-    private func performCorrection(
-        correctText: String,
-        originalText: String,
-        deleteCount: Int,
-        restoreBoundarySpace: Bool = true,
-        from: Language,
-        to: Language,
-        delayMs: Int,
-        notify: Bool
-    ) {
-        // isCorrecting was claimed by the caller, on the main thread.
+    private func perform(_ plan: CorrectionPlan, kind: PlanKind, delayMs: Int, notify: Bool) {
         let delayUs = UInt32(max(delayMs, 0) * 1000)
 
-        debugLog("[LayoutSwitcher] Correcting \(from.rawValue) -> \(to.rawValue): "
-                 + "'\(originalText)' -> '\(correctText)'")
+        debugLog("[LayoutSwitcher] \(kind) \(plan.from.rawValue) -> \(plan.to.rawValue): "
+                 + "'\(plan.originalText)' -> '\(plan.correctText)'")
 
-        // Let the triggering space reach the app, and give a fast typist's next keystroke
-        // a moment to arrive and mark the context dirty below. Was 50ms; most of what made
-        // a correction feel slow was this and the per-key pacing.
+        // Let the triggering key reach the app, and give a fast typist's next keystroke a
+        // moment to arrive and mark the context dirty below.
         usleep(Self.settleBeforeCorrectionUs)
 
         // Last exit before destructive output: a fast typist may already be into the next
@@ -687,26 +306,16 @@ final class KeyboardMonitor {
         if dirty { _isCorrecting = false }
         stateLock.unlock()
         if dirty {
-            debugLog("[LayoutSwitcher] Correction aborted: editing context changed")
+            debugLog("[LayoutSwitcher] Aborted: editing context changed")
             return
         }
 
-        // Erase the word and its trailing space with an exact number of backspaces.
-        //
-        // This used to select the word with Option+Shift+Left, on the theory that letting
-        // the text engine find the word start beats counting characters. It does not: the
-        // buffer's idea of a word is "letter keys since the last space", and on a US
-        // layout several of those keys type punctuation — ';' is Ukrainian 'ж', ',' is 'б',
-        // '.' is 'ю'. The text engine breaks a word on that punctuation, so the selection
-        // covered only the tail. Typing "pfd;lb" for "завжди" deleted just "lb" and left
-        // "pfd;завжди" behind.
-        //
-        // The count is exact: every buffered keystroke produces exactly one character in
-        // either layout (asserted in KeyMappingTests), plus one for the trailing space —
-        // except when a dead key ended the word and spent that space resolving itself, in
-        // which case no space reached the screen and `deleteCount` already excludes it.
-        // Keys that print without buffering empty the buffer instead — see handleEvent.
-        deleteBackward(characters: deleteCount)
+        // Erase with an exact number of backspaces. Counted, not selected: Option+Shift+
+        // Left lets the text engine find the word start, and it breaks a word on the
+        // punctuation that several US-layout keys type for Ukrainian letters — "pfd;lb"
+        // for "завжди" selected just "lb". The count is exact because every buffered
+        // keystroke produces exactly one character in either layout.
+        deleteBackward(characters: plan.deleteCount)
 
         // The one user-configurable pause, between erasing and retyping — an escape hatch
         // for apps that fall behind on rapid synthetic input. Not needed for ordering.
@@ -714,225 +323,53 @@ final class KeyboardMonitor {
 
         // Switch input source (TIS APIs must run on the main thread). No pause after it:
         // the retype is unicode events, which carry their characters regardless of layout.
-        // The switch matters only for what the user types next, and it takes effect
-        // synchronously.
         DispatchQueue.main.sync {
-            self.lastSelfSwitchTime = Date()
-            InputSourceManager.switchTo(to)
+            self.engine.noteSelfInitiatedLayoutSwitch()
+            InputSourceManager.switchTo(plan.to)
             self.onSelfInitiatedLayoutSwitch?()
         }
 
-        // Retype correct text
-        let typedFully = typeString(correctText)
-        if restoreBoundarySpace {
+        let typedFully = typeString(plan.correctText)
+        if plan.restoreBoundarySpace {
             simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
         }
 
-        // Publish post-correction state on main, under the lock, so handleEvent
-        // never observes a torn view of these fields. The undo snapshot is recorded
-        // only when every character actually went out: undo deletes
-        // `correctedForm.count + 1` characters, and a snapshot longer than what was
-        // typed would erase preceding text.
-        let now = Date()
+        // Publish the result on main, where the engine lives. The undo snapshot is recorded
+        // only when every character actually went out: undo erases `correctText.count`
+        // characters, and a snapshot longer than what was typed would erase preceding text.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.stateLock.lock()
             self._isCorrecting = false
-            if typedFully {
-                self.lastCorrectionHadTrailingSpace = restoreBoundarySpace
-                self.lastCorrectedWord = correctText
-                self.lastCorrectionTime = now
-                self.lastOriginalText = originalText
-                self.lastOriginalLayout = from
-            }
             self.stateLock.unlock()
 
-            self.backspaceCountAfterCorrection = 0
-            self.settings?.recordCorrection()
+            switch kind {
+            case .correction:
+                if typedFully { self.engine.correctionApplied(plan) }
+                self.settings?.recordCorrection()
+            case .undo:
+                // Remember the corrected form so it is left alone from now on.
+                if let word = self.engine.undoApplied() {
+                    self.settings?.addException(word)
+                }
+            }
         }
 
         if notify {
-            showNotification(from: from, to: to, word: correctText)
+            showNotification(from: plan.from, to: plan.to, word: plan.correctText)
         }
     }
 
-    /// Convert the last word on demand, whatever the detector thought of it.
-    ///
-    /// Deliberately skips the confidence score. The score exists to decide whether to act
-    /// *unasked*; here the user has asked, and refusing because a dictionary is thin would
-    /// leave them retyping the word by hand — the very thing this replaces. The guards that
-    /// remain are the ones about safety rather than confidence: never type into a password
-    /// field, and never act on a stale snapshot.
-    ///
-    /// Acts on the word being typed when there is one, otherwise on the word just finished.
-    /// That snapshot dies with the buffer, so once the caret has moved on there is nothing
-    /// to act on rather than something wrong.
-    func correctLastWordOnDemand() {
-        guard !isCorrecting else { return }
+    // MARK: - Synthetic keystrokes
 
-        guard SecureInputDetector.current() == .notSecure else {
-            debugLog("[LayoutSwitcher] On-demand correction skipped: password field")
-            return
-        }
+    /// How long the boundary key is given to land before the first backspace goes out.
+    private static let settleBeforeCorrectionUs: UInt32 = 20_000
 
-        let keystrokes: [Keystroke]
-        let layout: Language
-        let boundaryReachedScreen: Bool
-
-        if !keyBuffer.isEmpty {
-            // A pending dead key has printed nothing yet, so the buffer is one character
-            // longer than the screen and the backspace count would eat the character
-            // before the word. Nothing sensible can be done until it resolves.
-            guard !bufferEndsWithDeadKey else {
-                debugLog("[LayoutSwitcher] On-demand correction skipped: pending dead key")
-                return
-            }
-            // Mid-word: no boundary space has been typed yet, so none is behind the caret.
-            keystrokes = keyBuffer
-            layout = wordStartLayout ?? cachedLayout ?? .english
-            boundaryReachedScreen = false
-        } else if let finished = lastCompletedWord,
-                  Date().timeIntervalSince(finished.finishedAt) < Self.completedWordLifetime {
-            keystrokes = finished.keystrokes
-            layout = finished.layout
-            boundaryReachedScreen = finished.boundaryReachedScreen
-        } else {
-            debugLog("[LayoutSwitcher] Nothing to correct on demand")
-            return
-        }
-
-        guard !keystrokes.isEmpty else { return }
-
-        let target = layout.opposite
-        let originalText = KeyMapping.reconstruct(keycodes: keystrokes, language: layout)
-        let correctText = KeyMapping.reconstruct(keycodes: keystrokes, language: target)
-        guard originalText != correctText else { return }
-
-        stateLock.lock()
-        _isCorrecting = true
-        _correctionContextDirty = false
-        stateLock.unlock()
-
-        // The word is being replaced wherever it sits, so the buffer no longer describes
-        // what is on screen either way.
-        resetBuffer()
-
-        let deleteCount = originalText.count + (boundaryReachedScreen ? 1 : 0)
-        let delayMs = settings?.correctionDelayMs ?? 10
-        let notify = settings?.showNotifications ?? false
-
-        correctionQueue.async { [weak self] in
-            self?.performCorrection(
-                correctText: correctText,
-                originalText: originalText,
-                deleteCount: deleteCount,
-                // Mid-word there is no boundary space to put back, and writing one anyway
-                // would insert a character the user never typed.
-                restoreBoundarySpace: boundaryReachedScreen,
-                from: layout,
-                to: target,
-                delayMs: delayMs,
-                notify: notify
-            )
-        }
-    }
-
-    // MARK: - Undo Last Correction
-
-    /// Undo the last auto-correction: delete the corrected word, switch back, retype original.
-    func undoLastCorrection() {
-        stateLock.lock()
-        let originalTextOpt = lastOriginalText
-        let originalLayoutOpt = lastOriginalLayout
-        let correctionTimeOpt = lastCorrectionTime
-        let correctedFormOpt = lastCorrectedWord
-        let hadTrailingSpace = lastCorrectionHadTrailingSpace
-        let busy = _isCorrecting
-        stateLock.unlock()
-
-        // A correction still being typed owns the caret; undoing into it would interleave
-        // two runs of synthetic keystrokes.
-        guard !busy else {
-            print("[LayoutSwitcher] Correction in progress, ignoring undo")
-            return
-        }
-
-        // The corrected form is required, not optional: its length is how much text has to
-        // be erased before the original can be retyped.
-        guard let originalText = originalTextOpt,
-              let originalLayout = originalLayoutOpt,
-              let correctionTime = correctionTimeOpt,
-              let correctedForm = correctedFormOpt, !correctedForm.isEmpty,
-              Date().timeIntervalSince(correctionTime) < 10.0 else {
-            print("[LayoutSwitcher] Nothing to undo")
-            return
-        }
-
-        let delayMs = settings?.correctionDelayMs ?? 10
-        isCorrecting = true
-
-        correctionQueue.async { [weak self] in
-            guard let self = self else { return }
-            let delayUs = UInt32(max(delayMs, 0) * 1000)
-
-            // Erase the corrected word and its trailing space. Counted, not selected —
-            // see performCorrection for why word selection cannot be trusted here.
-            self.deleteBackward(characters: correctedForm.count + (hadTrailingSpace ? 1 : 0))
-            usleep(delayUs)
-
-            // Switch back to original layout (TIS APIs must run on main thread)
-            DispatchQueue.main.sync {
-                self.lastSelfSwitchTime = Date()
-                InputSourceManager.switchTo(originalLayout)
-                self.onSelfInitiatedLayoutSwitch?()
-            }
-
-            // Retype original text + space
-            self.typeString(originalText)
-            if hadTrailingSpace {
-                self.simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
-            }
-
-            DispatchQueue.main.async {
-                self.stateLock.lock()
-                self._isCorrecting = false
-                self.lastOriginalText = nil
-                self.lastOriginalLayout = nil
-                self.lastCorrectedWord = nil
-                self.lastCorrectionTime = nil
-                self.stateLock.unlock()
-
-                self.backspaceCountAfterCorrection = 0
-
-                // Record only the corrected form (per user preference).
-                self.settings?.addException(correctedForm)
-            }
-
-            debugLog("[LayoutSwitcher] Undo: restored '\(originalText)' (\(originalLayout.rawValue))")
-        }
-    }
-
-    // MARK: - Helpers
-
-    /// Full reset at a word boundary, or when the caret has moved somewhere unknown.
-    private func resetBuffer() {
-        lastCompletedWord = nil
-        keyBuffer.removeAll()
-        wordStartLayout = nil
-        skipCurrentWordCorrection = false
-        bufferEndsWithDeadKey = false
-        passwordHeuristic.reset()
-    }
-
-    /// Drop the reconstructable run but keep the password heuristic going. Used for keys
-    /// that print a character the buffer cannot represent, or that move the caret, without
-    /// ending the word the user is typing.
-    private func invalidateBuffer() {
-        lastCompletedWord = nil
-        keyBuffer.removeAll()
-        wordStartLayout = nil
-        bufferEndsWithDeadKey = false
-    }
+    /// Pause between synthetic keys. Events posted to the session tap are delivered in the
+    /// order posted, so the gap is not for ordering — it is a small margin for apps that
+    /// process input on a slow path. It used to be 7ms per key, which made a six-letter
+    /// correction take a visible quarter of a second; SwitchFix posts with no gap at all.
+    private static let interKeyGapUs: UInt32 = 1_000
 
     /// Post an event, stamped so the tap callback can tell it apart from real typing.
     private func post(_ event: CGEvent) {
@@ -945,7 +382,7 @@ final class KeyboardMonitor {
         guard characters > 0 else { return }
         // A miscomputed count here is destructive, and the buffer is bounded, so treat
         // anything past that bound as a bug and refuse rather than erase the document.
-        guard characters <= maxBufferLength + 1 else {
+        guard characters <= CorrectionEngine.maxBufferLength + 1 else {
             print("[LayoutSwitcher] Refusing to delete \(characters) characters — count out of range")
             return
         }
@@ -965,15 +402,6 @@ final class KeyboardMonitor {
         post(keyUp)
         usleep(Self.interKeyGapUs)
     }
-
-    /// How long the boundary space is given to land before the first backspace goes out.
-    private static let settleBeforeCorrectionUs: UInt32 = 20_000
-
-    /// Pause between synthetic keys. Events posted to the session tap are delivered in the
-    /// order posted, so the gap is not for ordering — it is a small margin for apps that
-    /// process input on a slow path. It used to be 7ms per key, which made a six-letter
-    /// correction take a visible quarter of a second; SwitchFix posts with no gap at all.
-    private static let interKeyGapUs: UInt32 = 1_000
 
     /// Types the text with synthetic unicode key events. Returns false if any character
     /// could not be posted — the caller must then not record an undo snapshot, because
