@@ -39,8 +39,12 @@ The script builds the app, installs it into `/Applications`, registers the login
 walks you through the privacy permissions macOS requires. The permission step is necessarily
 hands-on — no app can grant it to itself.
 
-> **Note:** the build needs Apple's Command Line Tools. If they are missing, macOS will
-> prompt you to install them; re-run `./install.sh` afterwards.
+> **Note:** building needs a Swift toolchain — either Apple's Command Line Tools or a full
+> Xcode. The script checks for `swift` and, if it is missing, offers to install the Command
+> Line Tools, which are the smaller of the two; re-run `./install.sh` afterwards.
+>
+> If Xcode is installed but its licence has never been accepted, every build fails with a
+> licence error until you run `sudo xcodebuild -license`.
 
 Other entry points:
 
