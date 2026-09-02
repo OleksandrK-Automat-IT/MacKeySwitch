@@ -7,6 +7,13 @@ NSSetUncaughtExceptionHandler { exception in
     print("[MacKeySwitch] Stack trace: \(exception.callStackSymbols.joined(separator: "\n"))")
 }
 
+// Line-buffer stdout even when it is a file or pipe. A debug build launched from a
+// terminal with its output redirected is the only way to watch this app decide, and with
+// the default full buffering every line sat in an 8KB buffer until the process was
+// killed — at which point it was lost. This is what makes `.build/debug/LayoutSwitcher >
+// log` actually produce a log.
+setvbuf(stdout, nil, _IOLBF, 0)
+
 let app = NSApplication.shared
 
 // Build-time mode: render the app icon into an .iconset directory and exit. Drawing the

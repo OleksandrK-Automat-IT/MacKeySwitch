@@ -14,7 +14,8 @@ like Punto Switcher, but native, small, and open source.
 - **Selection correction** — select any text, press `⌃⇧X`, and it is re-read in the other
   layout. Works on text you never typed.
 - **Undo** — `⌃⇧Z` reverts the last correction, and the word is remembered so it is not
-  touched again.
+  touched again. When there is nothing to revert, the same key converts the last word,
+  so one shortcut toggles the word either way.
 - **Two layouts** — Ukrainian and English (US, ABC, British and other Latin variants).
 - **Smart filtering** — skips password fields, URLs, emails and identifiers.
 - **App blacklist** — off by default in terminals, IDEs and code editors; any of them can be

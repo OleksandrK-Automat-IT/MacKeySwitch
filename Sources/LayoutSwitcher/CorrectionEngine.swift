@@ -127,6 +127,9 @@ final class CorrectionEngine {
     private struct AppliedCorrection {
         let plan: CorrectionPlan
         let at: Date
+        /// Whether the app decided on its own. Only those teach an exception when undone:
+        /// undoing a conversion the user asked for says nothing about the word.
+        let automatic: Bool
     }
     private var lastCorrection: AppliedCorrection?
     private var backspacesSinceCorrection = 0
@@ -504,15 +507,18 @@ final class CorrectionEngine {
     // MARK: Results
 
     /// Every character of the plan went out; it can be undone from here.
-    func correctionApplied(_ plan: CorrectionPlan) {
-        lastCorrection = AppliedCorrection(plan: plan, at: environment.now)
+    func correctionApplied(_ plan: CorrectionPlan, automatic: Bool = true) {
+        lastCorrection = AppliedCorrection(plan: plan, at: environment.now, automatic: automatic)
         backspacesSinceCorrection = 0
     }
 
-    /// Undo has run. Returns the word to remember as an exception, so it is left alone.
+    /// Undo has run. Returns the word to remember as an exception, so it is left alone —
+    /// only for an automatic correction; the user reversing their own request is not a
+    /// lesson about the word.
     func undoApplied() -> String? {
         defer { clearCorrectionSnapshot() }
-        return lastCorrection?.plan.correctText
+        guard let last = lastCorrection, last.automatic else { return nil }
+        return last.plan.correctText
     }
 
     // MARK: Helpers

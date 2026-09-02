@@ -242,7 +242,7 @@ final class KeyboardMonitor {
         case .nothing:
             break
         case .correct(let plan):
-            run(plan, kind: .correction)
+            run(plan, kind: .correction(automatic: true))
         case .learnException(let word):
             settings?.addException(word)
         }
@@ -251,23 +251,31 @@ final class KeyboardMonitor {
     // MARK: - Shortcuts
 
     func correctLastWordOnDemand() {
-        guard let plan = engine.onDemandPlan(isCorrecting: isCorrecting) else { return }
-        run(plan, kind: .correction)
-    }
-
-    func undoLastCorrection() {
-        guard let plan = engine.undoPlan(isCorrecting: isCorrecting) else {
-            print("[LayoutSwitcher] Nothing to undo")
+        guard let plan = engine.onDemandPlan(isCorrecting: isCorrecting) else {
+            debugLog("[LayoutSwitcher] Nothing to convert")
             return
         }
-        run(plan, kind: .undo)
+        run(plan, kind: .correction(automatic: false))
+    }
+
+    /// The undo key is a toggle on the last word. A fresh correction is reverted; with
+    /// nothing to revert, the last word is converted instead — the same key the user reaches
+    /// for either way, so it does the thing that makes sense for the text in front of them.
+    func undoLastCorrection() {
+        if let plan = engine.undoPlan(isCorrecting: isCorrecting) {
+            run(plan, kind: .undo)
+        } else {
+            debugLog("[LayoutSwitcher] Nothing to undo; converting the last word")
+            correctLastWordOnDemand()
+        }
     }
 
     // MARK: - Executing a plan
 
-    private enum PlanKind {
+    private enum PlanKind: Equatable {
         /// A correction: records an undo snapshot and counts toward statistics.
-        case correction
+        /// `automatic` is false when the user asked for it with a shortcut.
+        case correction(automatic: Bool)
         /// Reverses the last correction: clears the snapshot, remembers the word.
         case undo
     }
@@ -281,7 +289,7 @@ final class KeyboardMonitor {
         stateLock.unlock()
 
         let delayMs = settings?.correctionDelayMs ?? 10
-        let notify = kind == .correction && (settings?.showNotifications ?? false)
+        let notify = kind == .correction(automatic: true) && (settings?.showNotifications ?? false)
 
         correctionQueue.async { [weak self] in
             self?.perform(plan, kind: kind, delayMs: delayMs, notify: notify)
@@ -344,8 +352,8 @@ final class KeyboardMonitor {
             self.stateLock.unlock()
 
             switch kind {
-            case .correction:
-                if typedFully { self.engine.correctionApplied(plan) }
+            case .correction(let automatic):
+                if typedFully { self.engine.correctionApplied(plan, automatic: automatic) }
                 self.settings?.recordCorrection()
             case .undo:
                 // Remember the corrected form so it is left alone from now on.

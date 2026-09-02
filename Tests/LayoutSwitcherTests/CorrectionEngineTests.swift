@@ -498,6 +498,16 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
         #expect(h.engine.undoApplied() == nil)
     }
 
+    @Test func undoingAManualConversionTeachesNothing() {
+        // The user asked for the conversion and then took it back; the word is not a
+        // mistake the app made, so it must not become an exception.
+        let h = Harness(dictionary: StubDictionary())
+        h.type(wrongLayoutWord)
+        h.engine.correctionApplied(h.engine.onDemandPlan(isCorrecting: false)!, automatic: false)
+        #expect(h.engine.undoPlan(isCorrecting: false) != nil)
+        #expect(h.engine.undoApplied() == nil)
+    }
+
     @Test func backspacingOverTheWholeCorrectionLearnsIt() {
         // Six letters plus the space: the seventh backspace is the one that means "no".
         let (h, _) = corrected()
