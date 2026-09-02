@@ -14,8 +14,17 @@
 | Default | Action |
 | --- | --- |
 | ⌃⇧Space | Correct the last word on demand, ignoring the confidence score |
-| ⌃⇧Z | Undo the last correction and add the word to the exception list |
+| ⌃⇧Z | Undo the last correction; with nothing to undo, convert the last word |
 | ⌃⇧X | Convert the current selection to the other layout |
+
+The undo key is a **toggle on the last word**, not only an undo. Pressed on a word the app
+never touched it converts it, because every report about that key described it that way.
+Undo teaches an exception only for the app's own corrections — reverting a conversion the
+user asked for says nothing about the word, and learning from it would have silenced the
+automatic pass on that word for good.
+
+A conversion asked for by shortcut always ends in a space, whether or not one was erased;
+an automatic correction puts back exactly the space it erased.
 
 `DefaultHotkeys` holds these, and a test asserts they are distinct: Carbon refuses a
 duplicate combination silently, so a clash would ship as a shortcut that never fires.
@@ -117,6 +126,18 @@ installer/regrant-permissions.sh  # Ad-hoc signatures differ per build; macOS fo
 
 ## Core Architecture
 
+### The seam: CorrectionEngine vs KeyboardMonitor
+`CorrectionEngine` holds every decision — the key buffer, whether a word is worth
+correcting, what undo and the on-demand shortcut should do — as plain main-thread code with
+no locks and no system calls of its own. Everything it needs from the world arrives through
+`CorrectionEnvironment` (layout, dead keys, secure input, the clock) and `CorrectionSettings`.
+It answers with a `CorrectionPlan`: what to erase, what to type, which layout to switch to.
+
+`KeyboardMonitor` is the machinery — event tap, threads, synthetic keystrokes — and executes
+plans without deciding anything. A bug in behaviour belongs in the engine and gets a test;
+a bug in delivery (ordering, modifiers, timing) belongs in the monitor and usually cannot be
+unit-tested, so it gets a comment saying what was measured.
+
 ### Detection Confidence Scoring (LanguageDetector)
 Signal-weighted system:
 - **+14**: Other-layout reading is a real word
@@ -154,6 +175,16 @@ swift build && .build/debug/LayoutSwitcher
 
 (Quit the installed copy first — the single-instance guard exits the second one.)
 
+To watch the *installed* app instead, drop the debug binary into the bundle and launch it
+with stdout redirected — stdout is line-buffered from `main.swift`, so the log fills as it
+goes rather than at exit:
+
+```bash
+cp .build/debug/LayoutSwitcher /Applications/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher
+codesign --force --deep --sign - /Applications/MacKeySwitch.app
+nohup /Applications/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher > "$TMPDIR/mks.log" 2>&1 &
+```
+
 Worth remembering: three separate faults here were only found once something could
 report. If a release build silently does nothing, reproduce it with a debug build from a
 terminal before theorising — two speculative fixes shipped here for lack of that.
@@ -189,6 +220,9 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 
 ### Testing
 - Use `TestSupport.swift` for common fixtures (mock dicts, test strings)
+- A modifier chord reaches the tap **before** the Carbon hotkey fires, so the engine must
+  keep the word alive across it — both the finished word and the one still being typed.
+  Clearing it there is what made the on-demand shortcut find nothing, twice
 - `CorrectionEngineTests` drives the whole decision logic with a scripted keyboard and a
   fake environment (layout, dead keys, secure input, clock). Anything the monitor decides
   is testable there; if a bug is found in KeyboardMonitor itself, it belongs in the engine
@@ -202,15 +236,23 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 2. **Corrections only on space**: Return/Tab too late; keystrokes already sent / focus already moved
 3. **Async detection**: Correction applies after keystroke already displayed; rare out-of-order scenarios possible
 4. **Bundled dicts + macOS dicts**: Coverage is good but not perfect (DictionaryCoverageTests documents misses)
-5. **No Cmd+Z undo inside app**: Revert is via the shortcut (⌃⇧Z), not native undo (each correction is async)
+5. **No Cmd+Z undo inside app**: Revert is via the shortcut (⌃⇧Z), not native undo (each
+   correction is async). Binding it to a bare ⌃Z works, but Carbon then takes that
+   combination system-wide, and apps where it is the native undo lose it
 6. **Layout is read live at word start**: the cached layout is fed by a distributed
    notification that arrives late — reliably so right after the app's own switch — and a word
    attributed to the previous layout "corrects" into the text already on screen
 7. **Selection conversion borrows the pasteboard**: `AXSelectedText` is optional and most
    browsers and editors do not publish it, so the fallback is ⌘C. The original pasteboard is
    snapshotted and restored, but the converted text is briefly on it
-8. **Synthetic ⌘C/⌘V wait for the shortcut's modifiers to be released**: the physical keys
-   are still down when the hotkey fires, so an app would otherwise see ⌃⇧⌘V, not Paste
+8. **Anything a shortcut posts waits for that shortcut's modifiers to be released**: the
+   physical keys are still down when the hotkey fires, and the window server folds the
+   hardware modifier state into every posted event. Without the wait the backspaces went out
+   as ⌃Backspace and the replacement letters as control chords — the word vanished and
+   nothing replaced it — and the paste arrived as ⌃⇧⌘V. Both the selection converter and
+   the monitor's shortcut-driven plans wait, up to a second so a stuck key cannot stall
+   them, and typed events are posted with empty flags. Automatic corrections do not wait:
+   space carries no modifier, and the wait would cost them their speed
 
 ## Common Tasks & Commands
 
@@ -227,7 +269,7 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (146 tests, 18 suites)
+- [ ] Unit tests in `run-tests.sh` all pass (224 tests, 26 suites)
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Dictionary coverage tests document any gaps
 - [ ] Password heuristic tests cover edge cases
@@ -237,7 +279,9 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 ## Debugging Tips
 
 1. **Keystroke not triggering**: Check Accessibility grant (System Settings → Privacy & Security)
-2. **Corrections not working**: Enable logging via `Logging` module, run `--print-diagnostics`
+2. **Corrections not working**: run a debug build from a terminal and watch `debugLog`
+   (see Logging above). Every branch that declines to act says so: `Nothing to undo`,
+   `Nothing to convert`, `Aborted: editing context changed`, or the score line for the word
 3. **Permission lost after rebuild**: Run `regrant-permissions.sh` or pin identity
 4. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
 5. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
