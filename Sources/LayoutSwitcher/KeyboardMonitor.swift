@@ -144,6 +144,11 @@ final class KeyboardMonitor {
 
     var settings: SettingsModel?
 
+    /// Fired on the main thread right after this app selects an input source itself. The
+    /// menu-bar flag hangs off this rather than waiting for the distributed notification,
+    /// which is late often enough to leave the flag showing the previous layout.
+    var onSelfInitiatedLayoutSwitch: (() -> Void)?
+
     func start() {
         guard eventTap == nil else { return }
 
@@ -558,13 +563,6 @@ final class KeyboardMonitor {
               !isCorrecting,
               !passwordHeuristic.looksLikePassword else { return false }
 
-        // The heuristic above only guesses from the shape of the characters. Ask the
-        // system what the field actually is before rewriting anything into it.
-        guard SecureInputDetector.current() == .notSecure else {
-            debugLog("[LayoutSwitcher] Skipped correction: password field")
-            return false
-        }
-
         let layout = wordStartLayout ?? currentLanguage
         let buffer = keyBuffer
 
@@ -599,6 +597,15 @@ final class KeyboardMonitor {
             threshold: threshold,
             settings: settings
         ) else {
+            return false
+        }
+
+        // The password check is the one expensive guard — an accessibility round trip to
+        // the frontmost app — so it runs last, only for a word that is actually about to be
+        // rewritten. Most boundaries never get here. The heuristic above is the cheap
+        // first pass; this is the system's answer.
+        guard SecureInputDetector.current() == .notSecure else {
+            debugLog("[LayoutSwitcher] Skipped correction: password field")
             return false
         }
 
@@ -693,6 +700,7 @@ final class KeyboardMonitor {
         DispatchQueue.main.sync {
             self.lastSelfSwitchTime = Date()
             InputSourceManager.switchTo(to)
+            self.onSelfInitiatedLayoutSwitch?()
         }
 
         // Retype correct text
@@ -850,6 +858,7 @@ final class KeyboardMonitor {
             DispatchQueue.main.sync {
                 self.lastSelfSwitchTime = Date()
                 InputSourceManager.switchTo(originalLayout)
+                self.onSelfInitiatedLayoutSwitch?()
             }
 
             // Retype original text + space

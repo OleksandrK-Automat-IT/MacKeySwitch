@@ -21,6 +21,9 @@ enum SecureFieldState {
 /// that expose nothing.
 enum SecureInputDetector {
 
+    /// Upper bound on one accessibility round trip, in seconds.
+    private static let messagingTimeout: Float = 0.05
+
     /// macOS-wide secure input mode, which password fields switch on. A cheap read, safe to
     /// consult on every keystroke.
     static var isSystemSecureInputEnabled: Bool {
@@ -43,6 +46,12 @@ enum SecureInputDetector {
         // focused-element query is the less reliable of the two, and a failure here reads
         // as "no answer", which must never be mistaken for "password field".
         let application = AXUIElementCreateApplication(pid)
+        // Cap how long a slow app may hold this query. The default is effectively
+        // unbounded, and an Electron app under load was holding it for half a second —
+        // on the main thread, at every word boundary. A timed-out query reads as
+        // .unknown, which resolve() treats as an ordinary field; the system-wide secure
+        // input flag, checked first and cheaply, stays the authority for password fields.
+        AXUIElementSetMessagingTimeout(application, Self.messagingTimeout)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
                 application, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
@@ -53,6 +62,7 @@ enum SecureInputDetector {
         }
 
         let element = focusedValue as! AXUIElement  // type ID checked immediately above
+        AXUIElementSetMessagingTimeout(element, Self.messagingTimeout)
         var subrole: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
                 element, kAXSubroleAttribute as CFString, &subrole) == .success,

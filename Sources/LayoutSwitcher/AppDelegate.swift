@@ -11,6 +11,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: NSWindow?
     private let settings = SettingsModel.shared
     private var accessibilityTimer: Timer?
+    /// Backstop for the menu-bar flag. The distributed layout notification is the primary
+    /// signal but is not reliable; one TIS read a second costs microseconds.
+    private var layoutIconTimer: Timer?
     /// Held so the checkmark can follow `settings.isEnabled` however it was changed.
     private weak var enableMenuItem: NSMenuItem?
 
@@ -20,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         setupStatusBar()
         monitor.settings = settings
+        monitor.onSelfInitiatedLayoutSwitch = { [weak self] in self?.updateLayoutIcon() }
         setupGlobalUndoHotkey()
         observeEnabledSetting()
         observeInterfaceLanguage()
@@ -67,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         accessibilityTimer?.invalidate()
+        layoutIconTimer?.invalidate()
         undoHotkey.unregister()
         selectionHotkey.unregister()
         correctWordHotkey.unregister()
@@ -146,6 +151,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch result {
             case .success:
                 self?.settings.recordCorrection()
+                self?.updateLayoutIcon()
             case .failure(let reason):
                 // Logged to a file, not stdout: this path is silent by nature — nothing
                 // moves on screen when it declines — so without a record a refusal and a
@@ -231,6 +237,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSWorkspace.didActivateApplicationNotification,
             object: nil
         )
+        layoutIconTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.updateLayoutIcon()
+        }
         updateLayoutIcon()
     }
 
