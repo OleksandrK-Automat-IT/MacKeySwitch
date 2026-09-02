@@ -95,7 +95,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Register the system-wide undo hotkey via Carbon. Re-registers automatically
     /// when the user records a different shortcut in Settings.
     private func setupGlobalUndoHotkey() {
-        appLog("[LayoutSwitcher] launch: registering shortcuts")
         undoHotkey.onFire = { [weak self] in self?.handleUndoHotkey() }
 
         // The binding is taken from the publisher, never read back off `settings`:
@@ -133,7 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applySelectionHotkey(_ binding: HotkeyBinding) {
         guard binding.isEnabled else {
             selectionHotkey.unregister()
-            appLog("[LayoutSwitcher] selection hotkey disabled")
+            debugLog("[LayoutSwitcher] selection hotkey disabled")
             return
         }
         let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
@@ -153,10 +152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.settings.recordCorrection()
                 self?.updateLayoutIcon()
             case .failure(let reason):
-                // Logged to a file, not stdout: this path is silent by nature — nothing
-                // moves on screen when it declines — so without a record a refusal and a
-                // shortcut that never fired look identical.
-                appLog("[LayoutSwitcher] selection skipped: \(reason)")
+                debugLog("[LayoutSwitcher] selection skipped: \(reason)")
             }
         }
     }

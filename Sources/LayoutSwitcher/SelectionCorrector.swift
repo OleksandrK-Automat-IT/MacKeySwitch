@@ -74,8 +74,8 @@ enum SelectionCorrector {
                     if pasteboard.changeCount == ourChangeCount {
                         restore(saved, to: pasteboard)
                     }
-                    appLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
-                           + "\(target.rawValue), \(selection.count) chars")
+                    debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
+                             + "\(target.rawValue), \(selection.count) chars")
                     completion(.success(converted))
                 }
             }

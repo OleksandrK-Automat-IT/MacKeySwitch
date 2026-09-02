@@ -140,22 +140,21 @@ Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "п
 - Verify: `LayoutSwitcher --print-diagnostics` shows loaded tables
 
 ### Logging — read this before debugging anything
-The app is a menu-bar agent: launched from Finder it has **nowhere to send stdout**, so
-`print` goes nowhere, and `debugLog` is compiled out of release builds. NSLog does not reach
-the unified log from an ad-hoc-signed bundle either — this was measured, not assumed.
+There is no logging in release builds, by decision. A menu-bar agent launched from Finder
+has **nowhere to send stdout**, NSLog from this ad-hoc-signed bundle was measured not to
+reach the unified log, and the file log that once lived in `~/Library/Logs` was removed.
 
-`appLog` in `Logging.swift` appends to `~/Library/Logs/MacKeySwitch.log`, which works
-however the app was started. It is the only channel that reports anything from a release
-build, and it is reserved for rare events — launch, shortcut registration, a refused
-correction. Never per keystroke.
+`debugLog` in `Logging.swift` prints to stdout in **debug builds only**. To observe a run:
 
 ```bash
-tail -20 ~/Library/Logs/MacKeySwitch.log
+swift build && .build/debug/LayoutSwitcher
 ```
 
-Three separate faults here could only be guessed at before this existed, and two
-speculative fixes shipped as a result. If something silently does nothing, add an `appLog`
-line before theorising.
+(Quit the installed copy first — the single-instance guard exits the second one.)
+
+Worth remembering: three separate faults here were only found once something could
+report. If a release build silently does nothing, reproduce it with a debug build from a
+terminal before theorising — two speculative fixes shipped here for lack of that.
 
 ### What It Does NOT Touch
 - Password fields — `SecureInputDetector` asks the system (AX subrole, then the

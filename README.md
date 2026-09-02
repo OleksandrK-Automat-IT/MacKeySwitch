@@ -124,16 +124,24 @@ cannot tell the two apart, the text is left alone.
 
 ## Troubleshooting
 
-The app is a menu bar agent and has nowhere to print, so it keeps a log:
+**Corrections stopped after a rebuild.** The Accessibility grant is the first suspect —
+an ad-hoc signature changes with every build. See *About signing* above.
+
+**A shortcut does nothing.** Check Settings → General that it is still bound; Carbon
+refuses a combination another app already owns, and does so silently.
+
+**Which layouts and dead keys the app sees:**
 
 ```sh
-tail -20 ~/Library/Logs/MacKeySwitch.log
+MacKeySwitch.app/Contents/MacOS/LayoutSwitcher --print-diagnostics
 ```
 
-It records launch, which shortcuts registered, and why a correction was declined — a
-shortcut that never fired and one that fired and refused look the same on screen.
+Release builds keep no log. For a closer look, build debug and run the binary from a
+terminal — it prints what it decides and why:
 
-If corrections stopped after a rebuild, the Accessibility grant is the first suspect.
+```sh
+swift build && .build/debug/LayoutSwitcher
+```
 
 ## Build and test
 
