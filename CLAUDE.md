@@ -10,6 +10,16 @@
 - If confident, erases the word, switches the input source, and retypes it correctly
 - Allows undo (⌃⇧Z) to reject a correction and remember not to touch that word again
 
+### Shortcuts (all rebindable in Settings, all registered through Carbon)
+| Default | Action |
+| --- | --- |
+| ⌃⇧Space | Correct the last word on demand, ignoring the confidence score |
+| ⌃⇧Z | Undo the last correction and add the word to the exception list |
+| ⌃⇧X | Convert the current selection to the other layout |
+
+`DefaultHotkeys` holds these, and a test asserts they are distinct: Carbon refuses a
+duplicate combination silently, so a clash would ship as a shortcut that never fires.
+
 ### Tech Stack
 - **Language**: Swift 5.9
 - **Platform**: macOS 13+ (Ventura and later)
@@ -22,13 +32,19 @@
 - Runtime UI language switching (English/Ukrainian)
 - Per-app rules (exclude specific apps)
 - Password heuristic (does not touch mixed-case + digit/symbol combos)
-- Confidence-weighted detection (14 signals, 50k-word bundled dictionaries + macOS spelling dicts)
+- Confidence-weighted detection (6 signals, 50k-word bundled dictionaries + macOS spelling dicts)
+- Two correction modes: automatic (on space) or only when asked via shortcut
+- Selection conversion: convert any selected text, not just the word being typed
+- Password fields detected through the system, not guessed from the characters
+- URLs, emails and identifiers left alone
+- Terminals and code editors excluded by default
 - Ad-hoc code signing (pin identity via `MACKEYSWITCH_CODESIGN_IDENTITY` env var for stable permissions)
 
 ## Project Structure
 
+The package root *is* the repository root; there is no wrapping directory.
+
 ```
-LayoutSwitcher/
 ├── Sources/
 │   ├── LayoutSwitcher/        # Main app target
 │   │   ├── Resources/
@@ -42,6 +58,12 @@ LayoutSwitcher/
 │   │   ├── Logging.swift
 │   │   ├── CarbonHotkey.swift
 │   │   ├── Localization.swift
+│   │   ├── SecureInputDetector.swift   # Password fields, via AX subrole + secure input flag
+│   │   ├── WordFilter.swift            # Skips URLs, emails, identifiers
+│   │   ├── AppBlacklist.swift          # Default-excluded terminals and editors
+│   │   ├── SelectionCorrector.swift    # ⌃⇧X: reads the selection, converts, pastes back
+│   │   ├── LayoutTransliterator.swift  # Character-level mapping for text with no keycodes
+│   │   ├── SystemSpellChecker.swift    # macOS dictionaries behind DictionaryManager
 │   │   └── (other modules)
 │   └── ObjCExceptionGuard/    # Objective-C exception bridging
 ├── Tests/
@@ -117,8 +139,31 @@ Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "п
 - To add language: copy `en.lproj`, translate, add code to `AppLanguage`, update `Package.swift` and `build_app.sh`
 - Verify: `LayoutSwitcher --print-diagnostics` shows loaded tables
 
+### Logging — read this before debugging anything
+The app is a menu-bar agent: launched from Finder it has **nowhere to send stdout**, so
+`print` goes nowhere, and `debugLog` is compiled out of release builds. NSLog does not reach
+the unified log from an ad-hoc-signed bundle either — this was measured, not assumed.
+
+`appLog` in `Logging.swift` appends to `~/Library/Logs/MacKeySwitch.log`, which works
+however the app was started. It is the only channel that reports anything from a release
+build, and it is reserved for rare events — launch, shortcut registration, a refused
+correction. Never per keystroke.
+
+```bash
+tail -20 ~/Library/Logs/MacKeySwitch.log
+```
+
+Three separate faults here could only be guessed at before this existed, and two
+speculative fixes shipped as a result. If something silently does nothing, add an `appLog`
+line before theorising.
+
 ### What It Does NOT Touch
-- Passwords (heuristic: mixed case + digit/symbol, ≥6 chars)
+- Password fields — `SecureInputDetector` asks the system (AX subrole, then the
+  process-wide secure input flag). `PasswordHeuristic` still runs first as a cheap guess.
+  Note the fallback direction: an app that exposes no subrole is an **ordinary** field.
+  Treating silence as unsafe once disabled correction everywhere.
+- URLs, emails and identifier-shaped text (`WordFilter`)
+- Terminals and code editors (`AppBlacklist`, overridable per app in Settings)
 - Words in excluded apps (Settings → Per-App Rules)
 - Previously rejected words (user undo/backspace)
 - First word after manual layout switch
@@ -154,6 +199,14 @@ Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "п
 3. **Async detection**: Correction applies after keystroke already displayed; rare out-of-order scenarios possible
 4. **Bundled dicts + macOS dicts**: Coverage is good but not perfect (DictionaryCoverageTests documents misses)
 5. **No Cmd+Z undo inside app**: Revert is via the shortcut (⌃⇧Z), not native undo (each correction is async)
+6. **Layout is read live at word start**: the cached layout is fed by a distributed
+   notification that arrives late — reliably so right after the app's own switch — and a word
+   attributed to the previous layout "corrects" into the text already on screen
+7. **Selection conversion borrows the pasteboard**: `AXSelectedText` is optional and most
+   browsers and editors do not publish it, so the fallback is ⌘C. The original pasteboard is
+   snapshotted and restored, but the converted text is briefly on it
+8. **Synthetic ⌘C/⌘V wait for the shortcut's modifiers to be released**: the physical keys
+   are still down when the hotkey fires, so an app would otherwise see ⌃⇧⌘V, not Paste
 
 ## Common Tasks & Commands
 
@@ -170,7 +223,7 @@ Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "п
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (116+ tests)
+- [ ] Unit tests in `run-tests.sh` all pass (146 tests, 18 suites)
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Dictionary coverage tests document any gaps
 - [ ] Password heuristic tests cover edge cases
@@ -189,4 +242,4 @@ Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "п
 
 - **Author**: Oleksandr Kuzmin, 2026
 - **Licence**: GPL-3.0 (see LICENSE)
-- **Repo**: https://github.com/OleksandrK-Automat-IT/dba_work/tree/main/LayoutSwitcher
+- **Repo**: https://github.com/OleksandrK-Automat-IT/MacKeySwitch
