@@ -8,10 +8,33 @@ the other layout, erases the word, switches the input source, and retypes it. Pr
 undo shortcut (⌃⇧Z by default) if it guessed wrong — and it will remember not to touch
 that word again.
 
+If you would rather it never acted on its own, Settings → Correction mode → *Only on
+shortcut* turns the automatic pass off and leaves the engine available on demand.
+
 Menu-bar only; no Dock icon, no window unless you open Settings.
 
 The interface itself speaks English and Ukrainian — Settings → General → Interface language,
 applied immediately, no relaunch.
+
+## Shortcuts
+
+All three are global, rebindable in Settings, and enabled by default.
+
+| Default | What it does |
+| --- | --- |
+| ⌃⇧Space | Correct the last word now |
+| ⌃⇧Z | Undo the last correction, and remember not to touch that word again |
+| ⌃⇧X | Convert the selected text to the other layout |
+
+**⌃⇧Space works in both modes**, and that is most of its value. A correction needs a
+confident score before it will act unasked, so a word the dictionaries are unsure of is
+left alone — pressing the shortcut says "yes, that one" and converts it regardless. It
+acts on the word you are typing, or on the one you just finished.
+
+**⌃⇧X** works on any selection, including text you did not type: pasted, received, or
+noticed long after the fact. It reads the selection, converts whichever script dominates,
+and switches the layout to match. A selection with no clear majority is left alone, since
+converting it would corrupt whichever half was already right.
 
 ## Requirements
 
@@ -102,9 +125,18 @@ moved focus.
 
 ## What it deliberately will not touch
 
-- Anything that looks like a password: mixed case plus a digit or symbol, six characters or
-  more. Passwords are the worst possible thing to autocorrect, since you cannot see what
-  was mangled.
+- **Password fields.** Not guessed at: the app asks the accessibility API what the focused
+  field is, and falls back to the system-wide secure input flag that password fields set.
+  A shape heuristic — mixed case plus a digit or symbol, six characters or more — runs
+  first as a cheap filter. Passwords are the worst possible thing to autocorrect, since
+  you cannot see what was mangled.
+- **URLs, emails and identifiers.** `ok.ua` reaches the buffer looking exactly like an
+  ordinary word, because several US-layout punctuation keys are Ukrainian letters, and
+  rewriting it would break a link you are about to follow.
+- **Terminals and code editors**, by default — text there is usually code, and a
+  wrong-layout word in it is usually deliberate. Any of them can be switched back on in
+  Settings → Per-App Rules; only your own choices are stored, so defaults added in a later
+  release still reach you.
 - Words in apps you exclude in Settings → Per-App Rules.
 - Words you have rejected before, by backspacing over a correction or pressing undo.
 - The first word after you switch layouts by hand.
@@ -124,6 +156,21 @@ moved focus.
   Which keys are dead, and which of them resolve cleanly, is a property of the layout, so
   the app asks the layout rather than hardcoding anything: `--print-diagnostics` lists them
   and says which are corrected. Plain US, ABC and British have no dead keys at all.
+
+## When nothing happens
+
+The app is a menu-bar agent, so it has nowhere to print. It keeps a log instead:
+
+```sh
+tail -20 ~/Library/Logs/MacKeySwitch.log
+```
+
+It records the few things worth knowing — launch, which shortcuts registered, and why a
+correction was declined. A shortcut that never fired and one that fired and refused look
+identical on screen; this is how to tell them apart.
+
+If corrections stopped entirely after a rebuild, the Accessibility grant is the first
+suspect — see *About signing* above.
 
 ## Translating
 
