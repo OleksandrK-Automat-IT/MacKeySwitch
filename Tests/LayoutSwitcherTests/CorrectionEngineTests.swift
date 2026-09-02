@@ -367,14 +367,14 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
 
 @Suite struct EngineOnDemandTests {
 
-    @Test func midWordThereIsNoSpaceToErase() {
+    @Test func midWordThereIsNoSpaceToEraseButOneIsTypedAfter() {
         let h = Harness()
         h.type(wrongLayoutWord)
         let plan = h.engine.onDemandPlan(isCorrecting: false)
         #expect(plan == CorrectionPlan(
             originalText: "ghbdsn", correctText: "привіт",
             from: .english, to: .ukrainian,
-            deleteCount: 6, restoreBoundarySpace: false))
+            deleteCount: 6, restoreBoundarySpace: true))
     }
 
     @Test func afterTheSpaceItIsErasedAndPutBack() {
@@ -410,8 +410,8 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
         _ = h.key(0x06, control: true)
         let plan = h.engine.onDemandPlan(isCorrecting: false)
         #expect(plan?.correctText == "привіт")
-        #expect(plan?.deleteCount == 6)
-        #expect(plan?.restoreBoundarySpace == false)
+        #expect(plan?.deleteCount == 6, "no space was typed, so none is erased")
+        #expect(plan?.restoreBoundarySpace == true, "the conversion finishes the word")
     }
 
     @Test func aChordAfterAPendingDeadKeyLeavesNothingToConvert() {
@@ -477,10 +477,13 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
     }
 
     @Test func undoAccountsForAMissingBoundarySpace() {
+        // A correction that wrote no trailing space — the automatic pass mid-word.
         let h = Harness(dictionary: StubDictionary())
-        h.type(wrongLayoutWord)
-        let plan = h.engine.onDemandPlan(isCorrecting: false)!   // mid-word, no space
-        h.engine.correctionApplied(plan)
+        h.engine.correctionApplied(CorrectionPlan(
+            originalText: "ghbdsn", correctText: "привіт",
+            from: .english, to: .ukrainian,
+            deleteCount: 6, restoreBoundarySpace: false
+        ))
         #expect(h.engine.undoPlan(isCorrecting: false)?.deleteCount == 6)
         #expect(h.engine.undoPlan(isCorrecting: false)?.restoreBoundarySpace == false)
     }
@@ -541,8 +544,11 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
 
     @Test func backspacingWhenNoSpaceWasTypedLearnsOneKeyEarlier() {
         let h = Harness(dictionary: StubDictionary())
-        h.type(wrongLayoutWord)
-        h.engine.correctionApplied(h.engine.onDemandPlan(isCorrecting: false)!)
+        h.engine.correctionApplied(CorrectionPlan(
+            originalText: "ghbdsn", correctText: "привіт",
+            from: .english, to: .ukrainian,
+            deleteCount: 6, restoreBoundarySpace: false
+        ))
         for _ in 0..<5 { #expect(h.backspace() == .nothing) }
         #expect(h.backspace() == .learnException("привіт"))
     }

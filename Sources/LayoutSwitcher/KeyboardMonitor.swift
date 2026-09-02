@@ -302,6 +302,16 @@ final class KeyboardMonitor {
         debugLog("[LayoutSwitcher] \(kind) \(plan.from.rawValue) -> \(plan.to.rawValue): "
                  + "'\(plan.originalText)' -> '\(plan.correctText)'")
 
+        // A plan asked for with a shortcut runs while the shortcut's modifiers are still
+        // physically down, and the window server folds the hardware modifier state into
+        // everything posted: the backspaces went out as ⌃Backspace and the letters as
+        // control chords, so the word vanished and nothing replaced it. Wait for the keys
+        // to come up. Nothing marks the context dirty in the meantime — the tap does not
+        // watch modifier changes — so the plan is still valid afterwards.
+        if kind != .correction(automatic: true) {
+            waitForModifierRelease()
+        }
+
         // Let the triggering key reach the app, and give a fast typist's next keystroke a
         // moment to arrive and mark the context dirty below.
         usleep(Self.settleBeforeCorrectionUs)
@@ -385,6 +395,19 @@ final class KeyboardMonitor {
         event.post(tap: .cgAnnotatedSessionEventTap)
     }
 
+    /// Blocks the correction queue until no modifier key is held, or `modifierReleaseTimeout`
+    /// passes — a stuck key must not stall corrections forever.
+    private func waitForModifierRelease() {
+        let held: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
+        let deadline = Date().addingTimeInterval(Self.modifierReleaseTimeout)
+        while Date() < deadline,
+              !CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty {
+            usleep(5_000)
+        }
+    }
+
+    private static let modifierReleaseTimeout: TimeInterval = 1.0
+
     /// Press backspace exactly `characters` times.
     private func deleteBackward(characters: Int) {
         guard characters > 0 else { return }
@@ -426,8 +449,10 @@ final class KeyboardMonitor {
             }
             let utf16 = Array(str.utf16)
             event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+            event.flags = []
             post(event)
             if let upEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
+                upEvent.flags = []
                 post(upEvent)
             }
             usleep(Self.interKeyGapUs)

@@ -497,7 +497,10 @@ final class CorrectionEngine {
             originalText: originalText, correctText: correctText,
             from: layout, to: target,
             deleteCount: originalText.count + (boundaryReachedScreen ? 1 : 0),
-            restoreBoundarySpace: boundaryReachedScreen
+            // Always a space, even when none was erased: the shortcut is the end of typing
+            // that word, and finishing it by hand after the app just rewrote it is a step
+            // the user should not have to take.
+            restoreBoundarySpace: true
         )
     }
 
