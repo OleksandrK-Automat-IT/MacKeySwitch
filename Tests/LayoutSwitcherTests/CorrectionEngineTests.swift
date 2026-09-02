@@ -402,6 +402,29 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
         #expect(h.engine.onDemandPlan(isCorrecting: false) != nil)
     }
 
+    @Test func aWordStillBeingTypedSurvivesTheChordWithoutABoundary() {
+        // ⌃Z straight after the word, no space yet: the shortcut must still find it, and
+        // the plan must not erase a space that was never typed.
+        let h = Harness(dictionary: StubDictionary())
+        h.type(wrongLayoutWord)
+        _ = h.key(0x06, control: true)
+        let plan = h.engine.onDemandPlan(isCorrecting: false)
+        #expect(plan?.correctText == "привіт")
+        #expect(plan?.deleteCount == 6)
+        #expect(plan?.restoreBoundarySpace == false)
+    }
+
+    @Test func aChordAfterAPendingDeadKeyLeavesNothingToConvert() {
+        let h = Harness(dictionary: StubDictionary())
+        h.env.deadKeys.dead = [apostropheKey]
+        h.engine.layoutDidChange(isCorrecting: false)
+        h.env.advance(CorrectionEngine.manualSwitchWindow + 1)
+        h.type(wrongLayoutWord)
+        _ = h.key(apostropheKey)         // dead key: nothing printed yet
+        _ = h.key(0x06, control: true)
+        #expect(h.engine.onDemandPlan(isCorrecting: false) == nil)
+    }
+
     @Test func theFinishedWordExpires() {
         let h = Harness(dictionary: StubDictionary())
         h.type(wrongLayoutWord); h.space()

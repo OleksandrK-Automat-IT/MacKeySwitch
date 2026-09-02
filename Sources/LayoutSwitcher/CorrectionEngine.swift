@@ -224,7 +224,18 @@ final class CorrectionEngine {
             // shortcut asking to correct it. The tap sees the chord before the hotkey
             // fires, so clearing it here made the on-demand correction unable to ever
             // find anything. Staleness is bounded by `completedWordLifetime` instead.
-            let finished = lastCompletedWord
+            //
+            // A word still being typed becomes that snapshot too, without a boundary: the
+            // shortcut is usually pressed straight after the word, before any space, and
+            // the word is just as much behind the caret then. A pending dead key has
+            // printed nothing, so its word cannot be counted and is dropped.
+            var finished = lastCompletedWord
+            if !keyBuffer.isEmpty, !bufferEndsWithDeadKey, let layout = wordStartLayout ?? cachedLayout {
+                finished = CompletedWord(
+                    keystrokes: keyBuffer, layout: layout,
+                    boundaryReachedScreen: false, finishedAt: environment.now
+                )
+            }
             resetBuffer()
             lastCompletedWord = finished
             return .nothing
