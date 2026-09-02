@@ -643,13 +643,15 @@ final class KeyboardMonitor {
         notify: Bool
     ) {
         // isCorrecting was claimed by the caller, on the main thread.
-        let delayUs = UInt32(max(delayMs, 50) * 1000)
+        let delayUs = UInt32(max(delayMs, 0) * 1000)
 
         debugLog("[LayoutSwitcher] Correcting \(from.rawValue) -> \(to.rawValue): "
                  + "'\(originalText)' -> '\(correctText)'")
 
-        // Wait for the triggering space to fully process
-        usleep(50_000)
+        // Let the triggering space reach the app, and give a fast typist's next keystroke
+        // a moment to arrive and mark the context dirty below. Was 50ms; most of what made
+        // a correction feel slow was this and the per-key pacing.
+        usleep(Self.settleBeforeCorrectionUs)
 
         // Last exit before destructive output: a fast typist may already be into the next
         // word. The backspace count was snapshotted at the boundary, so erasing now would
@@ -680,15 +682,18 @@ final class KeyboardMonitor {
         // Keys that print without buffering empty the buffer instead — see handleEvent.
         deleteBackward(characters: deleteCount)
 
+        // The one user-configurable pause, between erasing and retyping — an escape hatch
+        // for apps that fall behind on rapid synthetic input. Not needed for ordering.
         usleep(delayUs)
 
-        // Switch input source (TIS APIs must run on the main thread)
+        // Switch input source (TIS APIs must run on the main thread). No pause after it:
+        // the retype is unicode events, which carry their characters regardless of layout.
+        // The switch matters only for what the user types next, and it takes effect
+        // synchronously.
         DispatchQueue.main.sync {
             self.lastSelfSwitchTime = Date()
             InputSourceManager.switchTo(to)
         }
-
-        usleep(delayUs)
 
         // Retype correct text
         let typedFully = typeString(correctText)
@@ -834,7 +839,7 @@ final class KeyboardMonitor {
 
         correctionQueue.async { [weak self] in
             guard let self = self else { return }
-            let delayUs = UInt32(max(delayMs, 50) * 1000)
+            let delayUs = UInt32(max(delayMs, 0) * 1000)
 
             // Erase the corrected word and its trailing space. Counted, not selected —
             // see performCorrection for why word selection cannot be trusted here.
@@ -846,14 +851,12 @@ final class KeyboardMonitor {
                 self.lastSelfSwitchTime = Date()
                 InputSourceManager.switchTo(originalLayout)
             }
-            usleep(delayUs)
 
             // Retype original text + space
             self.typeString(originalText)
             if hadTrailingSpace {
                 self.simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
             }
-            usleep(5_000)
 
             DispatchQueue.main.async {
                 self.stateLock.lock()
@@ -924,10 +927,18 @@ final class KeyboardMonitor {
         keyDown.flags = flags
         keyUp.flags = flags
         post(keyDown)
-        usleep(2_000)
         post(keyUp)
-        usleep(5_000)
+        usleep(Self.interKeyGapUs)
     }
+
+    /// How long the boundary space is given to land before the first backspace goes out.
+    private static let settleBeforeCorrectionUs: UInt32 = 20_000
+
+    /// Pause between synthetic keys. Events posted to the session tap are delivered in the
+    /// order posted, so the gap is not for ordering — it is a small margin for apps that
+    /// process input on a slow path. It used to be 7ms per key, which made a six-letter
+    /// correction take a visible quarter of a second; SwitchFix posts with no gap at all.
+    private static let interKeyGapUs: UInt32 = 1_000
 
     /// Types the text with synthetic unicode key events. Returns false if any character
     /// could not be posted — the caller must then not record an undo snapshot, because
@@ -945,12 +956,10 @@ final class KeyboardMonitor {
             let utf16 = Array(str.utf16)
             event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
             post(event)
-            usleep(2_000)
-
             if let upEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
                 post(upEvent)
             }
-            usleep(5_000)
+            usleep(Self.interKeyGapUs)
         }
         return complete
     }

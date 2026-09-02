@@ -157,7 +157,10 @@ final class SettingsModel: ObservableObject {
         didSet { defaults.set(sensitivity.rawValue, forKey: "sensitivity") }
     }
 
-    /// Delay in milliseconds between correction steps
+    /// Pause between erasing the word and retyping it, in milliseconds. Not needed for
+    /// ordering — synthetic events are delivered in the order posted — but an escape hatch
+    /// for apps that fall behind on rapid input. The slider's floor is 10; the code used to
+    /// clamp to 50 underneath it, so the bottom of the slider silently did nothing.
     @Published var correctionDelayMs: Int {
         didSet { defaults.set(correctionDelayMs, forKey: "correctionDelayMs") }
     }
@@ -314,7 +317,7 @@ final class SettingsModel: ObservableObject {
         let rawSensitivity = defaults.object(forKey: "sensitivity") as? Int ?? Sensitivity.medium.rawValue
         self.sensitivity = Sensitivity(rawValue: rawSensitivity) ?? .medium
 
-        self.correctionDelayMs = defaults.object(forKey: "correctionDelayMs") as? Int ?? 50
+        self.correctionDelayMs = defaults.object(forKey: "correctionDelayMs") as? Int ?? 10
         self.minWordLength = defaults.object(forKey: "minWordLength") as? Int ?? 2
 
         self.customEnglishWords = defaults.object(forKey: "customEnglishWords") as? [String] ?? []
