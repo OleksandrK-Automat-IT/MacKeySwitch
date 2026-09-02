@@ -254,35 +254,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.frontmostAppDidChange(bundleID: app?.bundleIdentifier)
     }
 
+    /// What the menu-bar item is currently showing, so a refresh that changes nothing —
+    /// the 1s backstop timer, mostly — does not redraw a bezier-path flag and reassign the
+    /// button's image every second for the life of the process.
+    private enum IconState: Equatable {
+        case disabled, needsAccessibility, english, ukrainian, other(String)
+    }
+    private var shownIconState: IconState?
+
+    /// Drawn once each; the flags never change.
+    private lazy var britishFlagImage = createBritishFlagImage()
+    private lazy var ukrainianFlagImage = createUkrainianFlagImage()
+    private lazy var disabledImage = createDisabledImage()
+
     private func updateLayoutIcon() {
         guard let button = statusItem.button else { return }
 
+        let state: IconState
         if !settings.isEnabled {
-            // Disabled: crossed-out icon
-            button.title = ""
-            button.image = createDisabledImage()
-            button.image?.isTemplate = false
-            return
+            state = .disabled
+        } else if !monitor.isRunning {
+            // Without the tap nothing works, and the reason is always the Accessibility
+            // grant. The warning used to be written straight to the button, where the
+            // periodic refresh replaced it with a flag within a second.
+            state = .needsAccessibility
+        } else {
+            switch InputSourceManager.currentLanguage() {
+            case .english: state = .english
+            case .ukrainian: state = .ukrainian
+            case nil:
+                state = .other(Self.badge(forOtherLayout: InputSourceManager.currentSourceLanguageTag()))
+            }
         }
+        guard state != shownIconState else { return }
+        shownIconState = state
 
-        let lang = InputSourceManager.currentLanguage()
+        switch state {
+        case .disabled:
+            button.title = ""
+            button.image = disabledImage
+            button.image?.isTemplate = false
 
-        switch lang {
+        case .needsAccessibility:
+            button.image = nil
+            button.title = "?? \u{26A0}"
+
         case .english:
             button.title = ""
-            button.image = createBritishFlagImage()
+            button.image = britishFlagImage
             button.image?.isTemplate = false
 
         case .ukrainian:
             button.title = ""
-            button.image = createUkrainianFlagImage()
+            button.image = ukrainianFlagImage
             button.image?.isTemplate = false
 
-        case nil:
+        case .other(let badge):
             // Some other layout. Show its country's flag rather than the "??" that used to
             // sit here — it said only "not one of the two", when what the user wants to know
             // is which layout is actually active.
-            let badge = Self.badge(forOtherLayout: InputSourceManager.currentSourceLanguageTag())
             if let image = Self.badgeImage(badge) {
                 // Rendered into an image the same size as the drawn flags, rather than set
                 // as the button's title: emoji and text have different metrics, so the
@@ -470,6 +500,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // First check without prompting — if already trusted, start immediately.
         if AXIsProcessTrusted() {
             monitor.start()
+            // The icon was drawn before the tap existed and shows the permission warning;
+            // without this it stays there until the periodic refresh, a visible flash at
+            // every launch.
+            updateLayoutIcon()
             return
         }
 
@@ -479,10 +513,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         _ = AXIsProcessTrustedWithOptions(options)
 
         print("[MacKeySwitch] Waiting for Accessibility permission...")
-        if let button = statusItem.button {
-            button.image = nil
-            button.title = "?? \u{26A0}"
-        }
+        updateLayoutIcon()
 
         // Poll (without re-prompting) until permission is granted.
         accessibilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in

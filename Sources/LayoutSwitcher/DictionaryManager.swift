@@ -34,10 +34,57 @@ final class DictionaryManager: WordSource {
     /// Windows editors prepend — `.whitespaces` does not cover U+FEFF, so the first word
     /// of an imported file used to be stored as "\u{FEFF}word" and never matched.
     private static func parseWordList(_ content: String) -> [String] {
-        content.replacingOccurrences(of: "\u{FEFF}", with: "")
-            .components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
-            .filter { !$0.isEmpty }
+        // Works on UTF-8 bytes rather than Characters. Splitting a 4MB string into
+        // Characters means grapheme breaking every byte; splitting bytes on '\n' is a
+        // memchr. Trimming is ASCII-only on purpose — that is what a word list contains —
+        // and the BOM is checked at the start rather than replaced across the whole file.
+        var words: [String] = []
+        content.utf8.withContiguousStorageIfAvailable { buffer in
+            words = parse(buffer)
+        } ?? {
+            // A non-contiguous String (bridged NSString) is copied once, then parsed.
+            var copy = content; copy.makeContiguousUTF8()
+            copy.utf8.withContiguousStorageIfAvailable { words = parse($0) }
+        }()
+        return words
+    }
+
+    private static func parse(_ bytes: UnsafeBufferPointer<UInt8>) -> [String] {
+        var words: [String] = []
+        words.reserveCapacity(bytes.count / 8)
+        var i = bytes.startIndex
+        // UTF-8 BOM: EF BB BF.
+        if bytes.count >= 3, bytes[0] == 0xEF, bytes[1] == 0xBB, bytes[2] == 0xBF { i = 3 }
+        let end = bytes.endIndex
+        while i < end {
+            var lineEnd = i
+            while lineEnd < end, bytes[lineEnd] != 0x0A { lineEnd += 1 }
+            var s = i, e = lineEnd
+            while s < e, isSpace(bytes[s]) { s += 1 }
+            while s < e, isSpace(bytes[e - 1]) { e -= 1 }
+            if s < e, let line = String(bytes: UnsafeBufferPointer(rebasing: bytes[s..<e]), encoding: .utf8) {
+                words.append(line.lowercased())
+            }
+            i = lineEnd + 1
+        }
+        return words
+    }
+
+    @inline(__always)
+    private static func isSpace(_ b: UInt8) -> Bool {
+        b == 0x20 || b == 0x09 || b == 0x0D || b == 0x0B || b == 0x0C
+    }
+
+    /// Build the two sets for one word list. Pure: no lock, no shared state, so callers
+    /// can run it before taking the lock and swap the result in atomically.
+    private static func index(_ words: [String]) -> (words: Set<String>, prefixes: Set<String>) {
+        var set = Set<String>(minimumCapacity: words.count)
+        var prefixes = Set<String>()
+        for word in words {
+            set.insert(word)
+            if word.count >= 3 { prefixes.insert(String(word.prefix(3))) }
+        }
+        return (set, prefixes)
     }
 
     /// Rebuild everything from the bundled lists plus the given customizations. The only
@@ -65,16 +112,40 @@ final class DictionaryManager: WordSource {
         englishPaths: [String],
         ukrainianPaths: [String]
     ) {
-        // Keep the published sets atomic across the complete rebuild. NSRecursiveLock lets
-        // the helpers below take the same lock without deadlocking.
-        lock.lock(); defer { lock.unlock() }
-        loadBundledDictionaries()
-        addCustomEnglishWordsNow(customEnglishWords)
-        addCustomUkrainianWordsNow(customUkrainianWords)
-        reloadCustomDictionaryFilesNow(
-            englishPaths: englishPaths,
-            ukrainianPaths: ukrainianPaths
-        )
+        // Everything is parsed and indexed into locals first. The lock is taken only for
+        // the swap, so readers see either the complete old dictionary or the complete new
+        // one, and never wait on a parse. Holding the lock across the parse — as this used
+        // to — stalled every lookup on the main thread for as long as the user's custom
+        // files took to read, which for a 370k-word file is a quarter of a second.
+        var en = Self.readBundled("en_words").map(Self.parseWordList) ?? []
+        var ua = Self.readBundled("ua_words").map(Self.parseWordList) ?? []
+        en += customEnglishWords.map { $0.lowercased() }
+        ua += customUkrainianWords.map { $0.lowercased() }
+        for path in englishPaths { en += Self.readFile(path).map(Self.parseWordList) ?? [] }
+        for path in ukrainianPaths { ua += Self.readFile(path).map(Self.parseWordList) ?? [] }
+
+        let enIndex = Self.index(en)
+        let uaIndex = Self.index(ua)
+
+        lock.lock()
+        englishWords = enIndex.words
+        englishPrefixes = enIndex.prefixes
+        ukrainianWords = uaIndex.words
+        ukrainianPrefixes = uaIndex.prefixes
+        lock.unlock()
+
+        print("[LayoutSwitcher] Dictionaries rebuilt: EN=\(enIndex.words.count), UA=\(uaIndex.words.count)")
+    }
+
+    private static func readBundled(_ name: String) -> String? {
+        guard let url = ResourceBundle.url(forResource: name, extension: "txt") else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }
+
+    private static func readFile(_ path: String) -> String? {
+        let content = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
+        if content == nil { print("[LayoutSwitcher] ERROR: Could not read dictionary file: \(path)") }
+        return content
     }
 
     private func loadBundledDictionaries() {
@@ -85,22 +156,13 @@ final class DictionaryManager: WordSource {
         var uaSet: Set<String> = []
         var uaPrefix: Set<String> = []
 
-        if let enURL = findResource("en_words", ext: "txt"),
-           let enContent = try? String(contentsOf: enURL, encoding: .utf8) {
-            let words = Self.parseWordList(enContent)
-            enSet = Set(words)
-            enPrefix = Set(words.compactMap { word in
-                word.count >= 3 ? String(word.prefix(3)) : nil
-            })
+        if let enContent = findResource("en_words", ext: "txt")
+            .flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) {
+            (enSet, enPrefix) = Self.index(Self.parseWordList(enContent))
         }
-
-        if let uaURL = findResource("ua_words", ext: "txt"),
-           let uaContent = try? String(contentsOf: uaURL, encoding: .utf8) {
-            let words = Self.parseWordList(uaContent)
-            uaSet = Set(words)
-            uaPrefix = Set(words.compactMap { word in
-                word.count >= 3 ? String(word.prefix(3)) : nil
-            })
+        if let uaContent = findResource("ua_words", ext: "txt")
+            .flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) {
+            (uaSet, uaPrefix) = Self.index(Self.parseWordList(uaContent))
         }
 
         lock.lock()
@@ -207,23 +269,16 @@ final class DictionaryManager: WordSource {
         }
 
         let words = Self.parseWordList(content)
+        let index = Self.index(words)
 
         lock.lock()
         switch language {
         case .english:
-            for word in words {
-                englishWords.insert(word)
-                if word.count >= 3 {
-                    englishPrefixes.insert(String(word.prefix(3)))
-                }
-            }
+            englishWords.formUnion(index.words)
+            englishPrefixes.formUnion(index.prefixes)
         case .ukrainian:
-            for word in words {
-                ukrainianWords.insert(word)
-                if word.count >= 3 {
-                    ukrainianPrefixes.insert(String(word.prefix(3)))
-                }
-            }
+            ukrainianWords.formUnion(index.words)
+            ukrainianPrefixes.formUnion(index.prefixes)
         }
         let enCount = englishWords.count
         let uaCount = ukrainianWords.count

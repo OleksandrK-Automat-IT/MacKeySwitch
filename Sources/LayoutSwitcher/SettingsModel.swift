@@ -385,10 +385,11 @@ final class SettingsModel: ObservableObject {
     func addException(_ word: String) {
         let lower = word.lowercased()
         guard !lower.isEmpty, !exceptionSet.contains(lower) else { return }
-        if exceptionWords.count >= Self.maxExceptionWords {
-            exceptionWords.removeFirst()
-        }
-        exceptionWords.append(lower)
+        // One assignment, so didSet — a defaults write plus a full Set rebuild — runs once.
+        var updated = exceptionWords
+        if updated.count >= Self.maxExceptionWords { updated.removeFirst() }
+        updated.append(lower)
+        exceptionWords = updated
         debugLog("[LayoutSwitcher] Self-learning: added '\(lower)' to exceptions")
     }
 

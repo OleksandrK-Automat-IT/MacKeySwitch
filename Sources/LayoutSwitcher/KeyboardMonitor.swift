@@ -144,6 +144,9 @@ final class KeyboardMonitor {
 
     var settings: SettingsModel?
 
+    /// Whether the event tap is installed — false until Accessibility is granted.
+    var isRunning: Bool { eventTap != nil }
+
     /// Fired on the main thread right after this app selects an input source itself. The
     /// menu-bar flag hangs off this rather than waiting for the distributed notification,
     /// which is late often enough to leave the flag showing the previous layout.
@@ -160,9 +163,14 @@ final class KeyboardMonitor {
         }
 
         if let settings = settings {
-            DictionaryManager.shared.addCustomEnglishWords(settings.customEnglishWords)
-            DictionaryManager.shared.addCustomUkrainianWords(settings.customUkrainianWords)
-            DictionaryManager.shared.reloadCustomDictionaryFiles(
+            // Asynchronous on purpose. These three used to run synchronously here, and
+            // with the user's 600k-word custom files that was ~400ms of blocked main
+            // thread at every launch. The bundled lists are already in place from
+            // DictionaryManager.init, so the first corrections work on those while the
+            // custom words arrive a moment later.
+            DictionaryManager.shared.rebuildAsync(
+                customEnglishWords: settings.customEnglishWords,
+                customUkrainianWords: settings.customUkrainianWords,
                 englishPaths: settings.customEnglishDictionaryPaths,
                 ukrainianPaths: settings.customUkrainianDictionaryPaths
             )
@@ -495,7 +503,16 @@ final class KeyboardMonitor {
             // Once per word is the same frequency as the dictionary lookup this path
             // already performs, and nowhere near the per-keystroke cost the cache exists
             // to avoid.
-            wordStartLayout = confirmedLayout() ?? currentLang
+            guard let live = confirmedLayout() else {
+                // The cache said English or Ukrainian; the system says neither. That
+                // happens when the user switched to a third layout and its notification
+                // has not landed yet. Buffering this word under the stale layout would
+                // reconstruct a Russian (say) word as English gibberish, match the other
+                // dictionary, and rewrite text inside a field the app does not handle.
+                invalidateBuffer()
+                return
+            }
+            wordStartLayout = live
         }
 
         keyBuffer.append(Keystroke(keycode: keycode, shift: isShifted, capsLock: capsLock))
@@ -570,7 +587,9 @@ final class KeyboardMonitor {
         // system disagrees about the layout now, the buffer does not describe what is on
         // screen, and correcting it would replace real text with a reconstruction of text
         // that was never typed. A missed correction is the cheap outcome here.
-        if let live = confirmedLayout(), live != layout {
+        // Unknown counts as changed: nil means the system reports a layout this app does
+        // not handle, and the buffer cannot describe what such a layout put on screen.
+        guard let live = confirmedLayout(), live == layout else {
             debugLog("[LayoutSwitcher] Skipped correction: layout changed under the word")
             return false
         }
@@ -584,7 +603,7 @@ final class KeyboardMonitor {
         }
         let threshold = settings?.sensitivity.scoreThreshold
             ?? SettingsModel.Sensitivity.medium.scoreThreshold
-        let delayMs = settings?.correctionDelayMs ?? 50
+        let delayMs = settings?.correctionDelayMs ?? 10
         let notify = settings?.showNotifications ?? false
 
         // Detection runs here, on the main thread, rather than on the correction queue.
@@ -761,6 +780,13 @@ final class KeyboardMonitor {
         let boundaryReachedScreen: Bool
 
         if !keyBuffer.isEmpty {
+            // A pending dead key has printed nothing yet, so the buffer is one character
+            // longer than the screen and the backspace count would eat the character
+            // before the word. Nothing sensible can be done until it resolves.
+            guard !bufferEndsWithDeadKey else {
+                debugLog("[LayoutSwitcher] On-demand correction skipped: pending dead key")
+                return
+            }
             // Mid-word: no boundary space has been typed yet, so none is behind the caret.
             keystrokes = keyBuffer
             layout = wordStartLayout ?? cachedLayout ?? .english
@@ -792,7 +818,7 @@ final class KeyboardMonitor {
         resetBuffer()
 
         let deleteCount = originalText.count + (boundaryReachedScreen ? 1 : 0)
-        let delayMs = settings?.correctionDelayMs ?? 50
+        let delayMs = settings?.correctionDelayMs ?? 10
         let notify = settings?.showNotifications ?? false
 
         correctionQueue.async { [weak self] in
@@ -842,7 +868,7 @@ final class KeyboardMonitor {
             return
         }
 
-        let delayMs = settings?.correctionDelayMs ?? 50
+        let delayMs = settings?.correctionDelayMs ?? 10
         isCorrecting = true
 
         correctionQueue.async { [weak self] in
