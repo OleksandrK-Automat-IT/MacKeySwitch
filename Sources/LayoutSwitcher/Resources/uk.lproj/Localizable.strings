@@ -115,6 +115,11 @@
 
 /* Редактор винятків */
 "exceptions.empty" = "Винятків ще немає. Натисніть Backspace після хибного виправлення, щоб навчити програму, або додайте слово нижче.";
+"stats.resetConfirm" = "Скинути лічильник у %d виправлень?";
+"exceptions.search" = "Пошук";
+"exceptions.noMatches" = "Нічого не знайдено за «%@».";
+"exceptions.editHelp" = "Подвійний клік, щоб редагувати";
+"exceptions.clearConfirm" = "Вилучити всі винятки (%d)?";
 "exceptions.clearAll" = "Очистити все";
 "exceptions.addPlaceholder" = "Додати слово-виняток…";
 "exceptions.add" = "Додати";

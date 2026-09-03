@@ -923,6 +923,7 @@ struct DictionaryTab: View {
 struct StatisticsTab: View {
     @ObservedObject var settings: SettingsModel
     @ObservedObject private var l10n = Localization.shared
+    @State private var confirmingReset = false
 
     var body: some View {
         Form {
@@ -943,22 +944,25 @@ struct StatisticsTab: View {
                         .foregroundColor(.secondary)
                 }
 
-                Button(L("stats.reset")) {
-                    settings.resetStatistics()
-                }
-                .foregroundColor(.red)
+                Button(L("stats.reset")) { confirmingReset = true }
+                    .foregroundColor(.red)
+                    .disabled(settings.totalCorrections == 0 && settings.sessionCorrections == 0)
             } header: {
                 Text(L("stats.section"))
+            }
+            .confirmationDialog(
+                L("stats.resetConfirm", settings.totalCorrections),
+                isPresented: $confirmingReset,
+                titleVisibility: .visible
+            ) {
+                Button(L("stats.reset"), role: .destructive) { settings.resetStatistics() }
+                Button(L("dictionary.cancel"), role: .cancel) {}
             }
 
             // Same form as the statistics, so the two blocks share insets and width. The
             // editor used to sit outside in its own stack, and its ideal width was wider
             // than the window — it rendered centred and cut off at both edges.
-            Section {
-                ExceptionsEditor(settings: settings)
-            } header: {
-                Text(L("stats.exceptions", settings.exceptionWords.count))
-            }
+            ExceptionsEditor(settings: settings)
         }
         .formStyle(.grouped)
     }
@@ -966,42 +970,104 @@ struct StatisticsTab: View {
 
 // MARK: - Exceptions Editor
 
-/// The self-learned exception words as form rows: each editable in place and deletable,
-/// a "Clear All", and a field to add one by hand.
+/// The self-learned exception words. Read far more often than edited, so a row is plain
+/// text until it is double-clicked; it used to be a text field always, which made a list
+/// of words look like a form to fill in and pushed every word into the trailing column.
 struct ExceptionsEditor: View {
     @ObservedObject var settings: SettingsModel
     @ObservedObject private var l10n = Localization.shared
     @State private var newWord: String = ""
+    @State private var query: String = ""
+    @State private var editing: String?
+    @State private var confirmingClear = false
+
+    /// Long enough that finding a word by eye starts to cost more than typing it.
+    private static let searchAppearsAbove = 10
+
+    /// Newest first: self-learning appends, so the word just taught was at the very bottom
+    /// — the one most likely to be checked or taken back.
+    private var visibleWords: [String] {
+        let all = settings.exceptionWords.reversed()
+        let trimmed = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !trimmed.isEmpty else { return Array(all) }
+        return all.filter { $0.contains(trimmed) }
+    }
 
     var body: some View {
-        if settings.exceptionWords.isEmpty {
-            Text(L("exceptions.empty"))
-                .foregroundColor(.secondary)
-                .font(.caption)
-        } else {
-            ForEach(settings.exceptionWords, id: \.self) { word in
-                ExceptionRow(
-                    word: word,
-                    onCommit: { newValue in commit(newValue, replacing: word) },
-                    onDelete: { deleteWord(word) }
-                )
-            }
-
-            HStack {
-                Spacer()
-                Button(L("exceptions.clearAll")) {
-                    settings.exceptionWords.removeAll()
+        Section {
+            if settings.exceptionWords.isEmpty {
+                Text(L("exceptions.empty"))
+                    .foregroundColor(.secondary)
+                    .font(.caption)
+            } else {
+                if settings.exceptionWords.count > Self.searchAppearsAbove {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField(L("exceptions.search"), text: $query)
+                            .textFieldStyle(.plain)
+                        if !query.isEmpty {
+                            Button {
+                                query = ""
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
-                .foregroundColor(.red)
-            }
-        }
 
-        HStack {
-            TextField(L("exceptions.addPlaceholder"), text: $newWord)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit { addWord() }
-            Button(L("exceptions.add")) { addWord() }
-                .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+                if visibleWords.isEmpty {
+                    Text(L("exceptions.noMatches", query))
+                        .foregroundColor(.secondary)
+                        .font(.caption)
+                }
+
+                ForEach(visibleWords, id: \.self) { word in
+                    ExceptionRow(
+                        word: word,
+                        isEditing: editing == word,
+                        beginEditing: { editing = word },
+                        onCommit: { newValue in
+                            editing = nil
+                            commit(newValue, replacing: word)
+                        },
+                        onDelete: { deleteWord(word) }
+                    )
+                }
+            }
+        } header: {
+            HStack {
+                Text(L("stats.exceptions", settings.exceptionWords.count))
+                Spacer()
+                if !settings.exceptionWords.isEmpty {
+                    Button(L("exceptions.clearAll")) { confirmingClear = true }
+                        .foregroundColor(.red)
+                }
+            }
+        } footer: {
+            // Below the list and visually apart from it: as a row of the same shape it read
+            // as one more exception rather than the way to add one.
+            HStack {
+                TextField(L("exceptions.addPlaceholder"), text: $newWord)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { addWord() }
+                Button(L("exceptions.add")) { addWord() }
+                    .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(.top, 4)
+        }
+        .confirmationDialog(
+            L("exceptions.clearConfirm", settings.exceptionWords.count),
+            isPresented: $confirmingClear,
+            titleVisibility: .visible
+        ) {
+            Button(L("exceptions.clearAll"), role: .destructive) {
+                settings.exceptionWords.removeAll()
+                query = ""
+            }
+            Button(L("dictionary.cancel"), role: .cancel) {}
         }
     }
 
@@ -1035,7 +1101,7 @@ struct ExceptionsEditor: View {
     }
 }
 
-/// One editable exception word.
+/// One exception word: plain text, editable on double-click.
 ///
 /// The text being typed lives here, in local state, and only reaches the model when the
 /// field is done with. Editing used to write straight through on every keystroke, which
@@ -1045,19 +1111,28 @@ struct ExceptionsEditor: View {
 /// `UserDefaults` and rebuilt the lookup set per keystroke.
 private struct ExceptionRow: View {
     let word: String
+    let isEditing: Bool
+    let beginEditing: () -> Void
     let onCommit: (String) -> Void
     let onDelete: () -> Void
     @ObservedObject private var l10n = Localization.shared
 
     @State private var text: String = ""
+    @State private var hovering = false
     @FocusState private var isFocused: Bool
 
     var body: some View {
         HStack {
-            TextField("", text: $text)
-                .textFieldStyle(.roundedBorder)
-                .focused($isFocused)
-                .onSubmit { onCommit(text) }
+            if isEditing {
+                TextField("", text: $text)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($isFocused)
+                    .onSubmit { onCommit(text) }
+                    .onAppear { isFocused = true }
+            } else {
+                Text(word)
+                Spacer()
+            }
 
             Button {
                 onDelete()
@@ -1067,12 +1142,18 @@ private struct ExceptionRow: View {
             }
             .buttonStyle(.plain)
             .help(L("exceptions.deleteHelp"))
+            // Only on the row under the pointer, so a long list is a list of words rather
+            // than a column of red buttons.
+            .opacity(hovering || isEditing ? 1 : 0)
         }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .onTapGesture(count: 2) { beginEditing() }
+        .help(isEditing ? "" : L("exceptions.editHelp"))
         // The row's identity is the word itself, so onAppear runs again whenever the model
         // value changes underneath.
         .onAppear { text = word }
-        .onDisappear { onCommit(text) }
-        .modifier(CommitOnFocusLoss(isFocused: isFocused) { onCommit(text) })
+        .modifier(CommitOnFocusLoss(isFocused: isFocused) { if isEditing { onCommit(text) } })
     }
 }
 

@@ -115,6 +115,11 @@
 
 /* Exceptions editor */
 "exceptions.empty" = "No learned exceptions yet. Backspace after a wrong correction to teach the app, or add one below.";
+"stats.resetConfirm" = "Reset the count of %d corrections?";
+"exceptions.search" = "Search";
+"exceptions.noMatches" = "Nothing matches “%@”.";
+"exceptions.editHelp" = "Double-click to edit";
+"exceptions.clearConfirm" = "Remove all %d exceptions?";
 "exceptions.clearAll" = "Clear All";
 "exceptions.addPlaceholder" = "Add exception word…";
 "exceptions.add" = "Add";
