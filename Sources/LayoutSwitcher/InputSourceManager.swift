@@ -43,7 +43,18 @@ final class InputSourceManager {
     /// Which Cyrillic layout the user was last seen in. English pairs with this one: a
     /// word typed in English that reads as Cyrillic is retyped in the layout the user
     /// actually works in, not in whichever Cyrillic layout happens to be listed first.
-    private static var lastUsedCyrillic: Language?
+    ///
+    /// Persisted, because the app is relaunched far more often than the user changes
+    /// languages — every rebuild, every login — and each relaunch used to forget the pair
+    /// and fall back to the first Cyrillic layout in the system's list.
+    private static let lastUsedCyrillicKey = "lastUsedCyrillicLanguage"
+    private static var lastUsedCyrillic: Language? = UserDefaults.standard
+        .string(forKey: lastUsedCyrillicKey).flatMap(Language.init(rawValue:)) {
+        didSet {
+            guard lastUsedCyrillic != oldValue else { return }
+            UserDefaults.standard.set(lastUsedCyrillic?.rawValue, forKey: lastUsedCyrillicKey)
+        }
+    }
 
     /// Returns the current input source identifier string
     static func currentInputSourceID() -> String {

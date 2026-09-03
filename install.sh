@@ -11,6 +11,17 @@ BUNDLE_ID="com.okuzmin.mackeyswitch"
 BUILT_APP="$SCRIPT_DIR/dist/$APP_NAME.app"
 INSTALLED_APP="/Applications/$APP_NAME.app"
 
+# `--skip-permissions`: build, install and relaunch, but leave the privacy grants alone.
+# The permission walkthrough resets the Accessibility entry so a fresh grant can be made,
+# which is right for a first install and wrong for a rebuild that already has one.
+SKIP_PERMISSIONS=0
+for arg in "$@"; do
+    case "$arg" in
+        --skip-permissions) SKIP_PERMISSIONS=1 ;;
+        *) echo "Unknown option: $arg"; echo "Usage: $0 [--skip-permissions]"; exit 2 ;;
+    esac
+done
+
 echo "=========================================="
 echo "        MacKeySwitch Setup                "
 echo "=========================================="
@@ -104,6 +115,14 @@ fi
 # ------------------------------------------------------------------
 # 4. Permissions
 # ------------------------------------------------------------------
+if [ "$SKIP_PERMISSIONS" = "1" ]; then
+    echo ""
+    echo "Step 4: privacy permissions left as they are (--skip-permissions)."
+    open "$INSTALLED_APP"
+    echo "   Relaunched $APP_NAME."
+    exit 0
+fi
+
 echo ""
 echo "Step 4: macOS privacy permissions..."
 echo ""
