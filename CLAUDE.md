@@ -54,8 +54,14 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
 Switching happens in **pairs**: English ↔ Ukrainian, English ↔ Russian. A Cyrillic word
 always goes back to English; an English-typed word goes to the Cyrillic layout the user
 **last worked in** (`InputSourceManager.preferredCyrillicLanguage()`, fed by every
-`currentLanguage()` read and by `switchTo`). Never Cyrillic to Cyrillic — the two share
-too many keys to tell apart, and it is not what the app is for.
+`currentLanguage()` read and by `switchTo`, **persisted in UserDefaults** as
+`lastUsedCyrillicLanguage` because relaunches are far more frequent than language
+changes). Never Cyrillic to Cyrillic — the two share too many keys to tell apart, and it
+is not what the app is for. With no Cyrillic layout enabled, English words are left alone.
+
+A fresh install has no memory yet and falls back to the first enabled Cyrillic layout in
+the system's order — so "typed Привет in English and nothing happened" on a new machine
+usually means Russian has never been the active layout. Once it has been, it is remembered.
 
 `Language.opposite` is the *historical* pair (Cyrillic → English, English → Ukrainian) and
 exists for tests and callers that predate Russian. Anything that decides a target must go
@@ -102,6 +108,9 @@ The package root *is* the repository root; there is no wrapping directory.
 │   └── ObjCExceptionGuard/    # Objective-C exception bridging
 ├── Tests/
 │   └── LayoutSwitcherTests/   # XCTest/Swift Testing suite
+│       ├── CorrectionEngineTests.swift # The decision logic, on a scripted keyboard
+│       ├── RussianLayoutTests.swift    # Key table, pairing, engine, transliteration
+│       ├── RussianDictionaryCoverageTests.swift
 │       ├── DictionaryCoverageTests.swift
 │       ├── LanguageDetectorTests.swift
 │       ├── PasswordHeuristicTests.swift
@@ -112,7 +121,7 @@ The package root *is* the repository root; there is no wrapping directory.
 │   ├── build_app.sh           # Universal signed `.app` build
 │   ├── build_installer.sh     # `.pkg` + `.dmg` for distribution
 │   └── regrant-permissions.sh # Re-grant Accessibility after rebuild
-├── install.sh                 # End-user install script
+├── install.sh                 # End-user install; --skip-permissions for rebuilds
 ├── run-tests.sh               # Test runner (needed: locates Testing.framework)
 └── Package.swift              # SwiftPM manifest
 ```
@@ -133,8 +142,13 @@ swift build -c release   # Release build
 
 ### Installing locally
 ```bash
-./install.sh             # Builds, installs to /Applications, sets login item, grants permissions
+./install.sh --skip-permissions   # Rebuild, install, relaunch — the way to iterate
+./install.sh                      # First install only: also walks through the privacy grants
 ```
+
+Never run the bare form for a rebuild: its permission step calls `regrant-permissions.sh`,
+which does `tccutil reset Accessibility` and so **removes** a grant that was working. On
+this machine ad-hoc rebuilds have kept the grant so far; the reset is what loses it.
 
 ### Distributable build
 ```bash
@@ -174,9 +188,13 @@ Threshold varies by Sensitivity (Medium = 10, default).
 
 ### Dictionary Lookup Chain
 1. Bundled 50k-word lists (en_words.txt, ua_words.txt) — fast, local
-2. macOS spelling dictionaries (system-wide) — slow but comprehensive
+2. The user's own words and imported files (Settings → Dictionary, one column per language)
+3. macOS spelling dictionaries (system-wide) — slow but comprehensive
 
 Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "при").
+Russian has no bundled list at all: steps 2 and 3 are everything it has. Its prefix check
+answers "could be" while its index is empty — with no corpus there is no basis to call a
+prefix invalid, and saying so would hand every Russian word an unearned +2.
 
 ### Localization (Runtime Language Switch)
 - Strings live in `Sources/LayoutSwitcher/Resources/<code>.lproj/Localizable.strings`
@@ -221,7 +239,10 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 - Terminals and code editors (`AppBlacklist`, overridable per app in Settings)
 - Words in excluded apps (Settings → Per-App Rules)
 - Previously rejected words (user undo/backspace)
-- First word after manual layout switch
+- First word after a manual layout switch, for `manualSwitchWindow` (2 s). This is the
+  usual reason a *quick test* fails: switch layout, switch back, type at once — the word
+  lands inside the window and is skipped by design. Wait a couple of seconds or type
+  something else first.
 
 ### Permissions Model
 - **Accessibility** (system keystroke capture + paste)
@@ -285,7 +306,8 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 | --- | --- |
 | Debug build | `swift build` |
 | Run tests | `./run-tests.sh` |
-| Install locally | `./install.sh` |
+| Rebuild and reinstall | `./install.sh --skip-permissions` |
+| First install (with permission walkthrough) | `./install.sh` |
 | Make `.dmg` for distribution | `installer/build_installer.sh` |
 | Check localization coverage | `dist/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher --print-diagnostics` |
 | Add new language | Copy `en.lproj` → `new_code.lproj`, translate, update `AppLanguage` enum, `Package.swift`, `build_app.sh` |
@@ -307,9 +329,13 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 2. **Corrections not working**: run a debug build from a terminal and watch `debugLog`
    (see Logging above). Every branch that declines to act says so: `Nothing to undo`,
    `Nothing to convert`, `Aborted: editing context changed`, or the score line for the word
-3. **Permission lost after rebuild**: Run `regrant-permissions.sh` or pin identity
-4. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
-5. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
+3. **Permission lost after rebuild**: Run `regrant-permissions.sh` or pin identity — and
+   check it was not `./install.sh` without `--skip-permissions` that removed it
+4. **English word not corrected into Russian**: the pair is the *last-used* Cyrillic layout
+   (Settings → Status shows which). Russian must have been active at least once; and the
+   word must not be the first within 2 s of a manual layout switch
+5. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
+6. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
 
 ## Contact & License
 
