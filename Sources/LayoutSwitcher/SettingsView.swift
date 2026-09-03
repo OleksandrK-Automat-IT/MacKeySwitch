@@ -641,40 +641,56 @@ struct PerAppTab: View {
 struct DictionaryTab: View {
     @ObservedObject var settings: SettingsModel
     @ObservedObject private var l10n = Localization.shared
-    @State private var importStatusMessage = ""
-    @State private var importSucceeded = true
-    @State private var importInProgress = false
 
-    /// One importer and one button; the language comes from the picker beside it.
-    ///
-    /// There used to be one "Import" button per language, each with its own
-    /// `.fileImporter`. SwiftUI keeps only one presentation of a given kind per view, so
-    /// all but the last silently did nothing.
+    /// A file the user has chosen but not yet committed to. Holding the survey rather than
+    /// the words themselves: parsing 370k words costs ~150ms but tens of megabytes, and the
+    /// user may sit on this decision. The file is read again on Add.
+    private struct PendingFile {
+        let url: URL
+        let survey: DictionaryManager.FileSurvey
+    }
+
     @State private var showingFilePicker = false
-    @State private var importLanguage: Language = .english
+    @State private var pending: PendingFile?
+    /// Pre-filled from the survey; a correction, not a question.
+    @State private var pendingLanguage: Language = .english
+    @State private var busy = false
+    @State private var isDropTarget = false
+    @State private var statusMessage = ""
+    @State private var statusIsError = false
+    @State private var counts: [Language: Int] = [:]
 
     var body: some View {
         Form {
             Section {
-                Picker(L("dictionary.importLanguage"), selection: $importLanguage) {
-                    ForEach(Language.allCases, id: \.self) { language in
-                        Text(language.localizedName).tag(language)
+                ForEach(Language.allCases, id: \.self) { language in
+                    HStack {
+                        Text(language.localizedName)
+                        Spacer()
+                        Text(L("dictionary.wordCount", counts[language] ?? 0))
+                            .monospacedDigit()
+                            .foregroundColor(.secondary)
                     }
                 }
-
-                HStack {
-                    Button(L("dictionary.import")) { showingFilePicker = true }
-                        .disabled(importInProgress)
-                    if !importStatusMessage.isEmpty {
-                        Text(importStatusMessage)
-                            .font(.caption)
-                            .foregroundColor(importSucceeded ? .green : .red)
-                    }
-                }
-
-                Text(L("dictionary.importHint"))
+                Text(L("dictionary.countsHint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
+            } header: {
+                Text(L("dictionary.section"))
+            }
+
+            Section {
+                if let pending = pending {
+                    pendingView(pending)
+                } else {
+                    chooserView
+                }
+
+                if !statusMessage.isEmpty {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundColor(statusIsError ? .red : .green)
+                }
             } header: {
                 Text(L("dictionary.importSection"))
             }
@@ -693,8 +709,10 @@ struct DictionaryTab: View {
                 ForEach(files, id: \.1) { language, path in
                     HStack {
                         Image(systemName: "doc.text")
-                        Text("\(language.localizedName): \(URL(fileURLWithPath: path).lastPathComponent)")
+                        Text(URL(fileURLWithPath: path).lastPathComponent)
+                        Text(language.localizedName)
                             .font(.caption)
+                            .foregroundColor(.secondary)
                         Spacer()
                         Button(role: .destructive) {
                             remove(path: path, language: language)
@@ -710,39 +728,134 @@ struct DictionaryTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { refreshCounts() }
+        // The whole tab is the drop target, not just the button: a file dragged anywhere
+        // over these settings means the same thing.
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first else { return false }
+            survey(url)
+            return true
+        } isTargeted: { isDropTarget = $0 }
+        .overlay {
+            if isDropTarget {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor, lineWidth: 2)
+                    .padding(4)
+                    .allowsHitTesting(false)
+            }
+        }
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: [.plainText],
             allowsMultipleSelection: false
         ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                importDictionaryFile(url: url, language: importLanguage)
+            if case .success(let urls) = result, let url = urls.first { survey(url) }
+        }
+    }
+
+    private var chooserView: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button(L("dictionary.addFile")) { showingFilePicker = true }
+                    .disabled(busy)
+                if busy {
+                    ProgressView().controlSize(.small)
+                }
+                Text(L("dictionary.dropHint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Text(L("dictionary.importHint"))
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func pendingView(_ pending: PendingFile) -> some View {
+        HStack {
+            Image(systemName: "doc.text")
+            Text(pending.url.lastPathComponent)
+                .fontWeight(.medium)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer()
+        }
+
+        // Named by the file when it can be, asked for when it cannot. Either way the
+        // control is the same one, so a wrong guess is a click away from right.
+        Picker(L("dictionary.importLanguage"), selection: $pendingLanguage) {
+            ForEach(Language.allCases, id: \.self) { language in
+                Text(language.localizedName).tag(language)
+            }
+        }
+
+        Text(summary(for: pending.survey))
+            .font(.caption)
+            .foregroundColor(pending.survey.detected == nil ? .orange : .secondary)
+
+        HStack {
+            Button(L("dictionary.add")) { commit(pending) }
+                .keyboardShortcut(.defaultAction)
+                .disabled(busy || pending.survey.usable[pendingLanguage, default: 0] == 0)
+            Button(L("dictionary.cancel")) { self.pending = nil }
+            if busy { ProgressView().controlSize(.small) }
+        }
+    }
+
+    /// What the file turned out to be, in one line.
+    private func summary(for survey: DictionaryManager.FileSurvey) -> String {
+        let usable = survey.usable[pendingLanguage, default: 0]
+        if usable == 0 {
+            return L("dictionary.noneForLanguage", pendingLanguage.localizedName)
+        }
+        var text = survey.detected == nil
+            ? L("dictionary.ambiguous", usable)
+            : L("dictionary.detected", usable)
+        if survey.unusable > 0 {
+            text += " " + L("dictionary.skipped", survey.unusable)
+        }
+        return text
+    }
+
+    /// Read the file and report, without touching any dictionary.
+    private func survey(_ url: URL) {
+        busy = true
+        statusMessage = ""
+        let accessing = url.startAccessingSecurityScopedResource()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let survey = DictionaryManager.survey(url: url)
+            DispatchQueue.main.async {
+                if accessing { url.stopAccessingSecurityScopedResource() }
+                busy = false
+                guard let survey = survey, survey.totalUsable > 0 else {
+                    statusIsError = true
+                    statusMessage = L("dictionary.importFailed", url.lastPathComponent)
+                    return
+                }
+                pendingLanguage = survey.detected ?? .english
+                pending = PendingFile(url: url, survey: survey)
             }
         }
     }
 
-    private func remove(path: String, language: Language) {
-        switch language {
-        case .english: settings.customEnglishDictionaryPaths.removeAll { $0 == path }
-        case .ukrainian: settings.customUkrainianDictionaryPaths.removeAll { $0 == path }
-        case .russian: settings.customRussianDictionaryPaths.removeAll { $0 == path }
-        }
-        rebuildDictionaries()
-    }
-
-    private func importDictionaryFile(url: URL, language: Language) {
+    private func commit(_ file: PendingFile) {
+        let language = pendingLanguage
+        let url = file.url
         let accessing = url.startAccessingSecurityScopedResource()
-        importInProgress = true
-        importStatusMessage = L("dictionary.importing", url.lastPathComponent)
-        importSucceeded = true
+        busy = true
+        statusMessage = L("dictionary.importing", url.lastPathComponent)
+        statusIsError = false
 
         DictionaryManager.shared.loadDictionaryFileAsync(url: url, language: language) { count in
             if accessing { url.stopAccessingSecurityScopedResource() }
-            importInProgress = false
-            importSucceeded = count > 0
+            busy = false
+            pending = nil
+            refreshCounts()
 
             guard count > 0 else {
-                importStatusMessage = L("dictionary.importFailed", url.lastPathComponent)
+                statusIsError = true
+                statusMessage = L("dictionary.importFailed", url.lastPathComponent)
                 return
             }
 
@@ -763,10 +876,26 @@ struct DictionaryTab: View {
                 }
             }
 
-            importStatusMessage = L("dictionary.importedCount", count, url.lastPathComponent)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                importStatusMessage = ""
-            }
+            statusMessage = L("dictionary.importedCount", count, url.lastPathComponent)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { statusMessage = "" }
+        }
+    }
+
+    private func remove(path: String, language: Language) {
+        switch language {
+        case .english: settings.customEnglishDictionaryPaths.removeAll { $0 == path }
+        case .ukrainian: settings.customUkrainianDictionaryPaths.removeAll { $0 == path }
+        case .russian: settings.customRussianDictionaryPaths.removeAll { $0 == path }
+        }
+        rebuildDictionaries()
+    }
+
+    /// The counts are read after every change rather than published from the manager: the
+    /// rebuild is asynchronous, so there is a moment where the old numbers are still true.
+    private func refreshCounts() {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let fresh = DictionaryManager.shared.wordCounts()
+            DispatchQueue.main.async { counts = fresh }
         }
     }
 
@@ -784,6 +913,8 @@ struct DictionaryTab: View {
             ukrainianPaths: settings.customUkrainianDictionaryPaths,
             russianPaths: settings.customRussianDictionaryPaths
         )
+        // The rebuild is queued, not done; give it a moment before reading the totals.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { refreshCounts() }
     }
 }
 

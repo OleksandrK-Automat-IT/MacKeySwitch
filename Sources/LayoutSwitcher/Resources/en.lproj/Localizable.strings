@@ -86,11 +86,21 @@
 "perApp.removeHelp" = "Remove %@ from the list";
 
 /* Dictionary tab */
-"dictionary.importSection" = "Import";
+"dictionary.section" = "Dictionaries";
+"dictionary.wordCount" = "%d words";
+"dictionary.countsHint" = "Bundled and imported words together. The macOS spelling dictionary is consulted as well, and is all Russian has until you import a list.";
+"dictionary.addFile" = "Add Dictionary File…";
+"dictionary.dropHint" = "or drag one onto this window";
+"dictionary.importHint" = "A UTF-8 text file, one word per line. Imported words stay after relaunch.";
 "dictionary.importLanguage" = "Language:";
-"dictionary.importHint" = "A UTF-8 text file, one word per line. Words are merged into that language's dictionary and stay after relaunch.";
+"dictionary.detected" = "%d words recognised.";
+"dictionary.ambiguous" = "%d words, but the language is not clear — choose it above.";
+"dictionary.noneForLanguage" = "No %@ words in this file.";
+"dictionary.skipped" = "%d lines skipped.";
+"dictionary.add" = "Add";
+"dictionary.cancel" = "Cancel";
+"dictionary.importSection" = "Import";
 "dictionary.noFiles" = "No files imported.";
-"dictionary.import" = "Import Dictionary File...";
 "dictionary.importedFiles" = "Imported Dictionary Files";
 "dictionary.importedCount" = "Imported %1$d words from %2$@";
 "dictionary.importing" = "Importing %@…";

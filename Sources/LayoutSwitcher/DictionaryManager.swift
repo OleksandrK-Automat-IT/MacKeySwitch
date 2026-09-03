@@ -276,6 +276,71 @@ final class DictionaryManager: WordSource {
         return ukrainianPrefixes.contains(p)
     }
 
+    /// How many words each language currently knows, bundled and imported together.
+    /// The Dictionary tab shows these: without them there is no way to tell whether an
+    /// import actually reached the detector.
+    func wordCounts() -> [Language: Int] {
+        lock.lock(); defer { lock.unlock() }
+        return [.english: englishWords.count,
+                .ukrainian: ukrainianWords.count,
+                .russian: russianWords.count]
+    }
+
+    // MARK: - Inspecting a file before importing it
+
+    /// What a word-list file turns out to be, read before anything is added.
+    struct FileSurvey: Equatable {
+        /// Words that belong to exactly one of the three alphabets, per language.
+        let usable: [Language: Int]
+        /// Lines that are no language's word: markup, frequencies, Hunspell flags, prose.
+        let unusable: Int
+
+        /// The language this file is, or nil when the file cannot say.
+        ///
+        /// A word list is not perfectly clean — English lists carry Cyrillic loanwords and
+        /// Ukrainian ones carry Latin abbreviations — so this asks for a clear majority
+        /// rather than purity. Ukrainian and Russian overlap heavily, and a file of only
+        /// their shared letters counts for both; the winner has to be ahead by a margin,
+        /// otherwise the user is asked.
+        var detected: Language? {
+            let ranked = usable.sorted { $0.value > $1.value }
+            guard let best = ranked.first, best.value > 0 else { return nil }
+            let runnerUp = ranked.dropFirst().first?.value ?? 0
+            guard Double(best.value) >= Double(runnerUp) * Self.winningMargin else { return nil }
+            return best.key
+        }
+
+        var totalUsable: Int { usable.values.reduce(0, +) }
+
+        /// How far ahead the leader must be. Ukrainian and Russian share most of their
+        /// alphabet, so a Ukrainian list scores under Russian too — for every word without
+        /// і, ї, є or ґ in it. Measured on the bundled Ukrainian list, which scores about
+        /// 1.6× for Ukrainian over Russian; 1.25 leaves room for a list of any register
+        /// while still refusing a genuinely mixed file.
+        static let winningMargin = 1.25
+    }
+
+    /// Read a file and report what it contains, without changing any dictionary.
+    ///
+    /// Deliberately re-reads on import rather than holding the parsed words: parsing is
+    /// ~150ms for a 370k-word file, and keeping it in memory between the survey and the
+    /// user's decision costs tens of megabytes for as long as they take to decide.
+    static func survey(url: URL) -> FileSurvey? {
+        guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        let words = parseWordList(content)
+        var usable: [Language: Int] = [:]
+        var unusable = 0
+        for word in words {
+            var matched = false
+            for language in Language.allCases where isValidImportedWord(word, language: language) {
+                usable[language, default: 0] += 1
+                matched = true
+            }
+            if !matched { unusable += 1 }
+        }
+        return FileSurvey(usable: usable, unusable: unusable)
+    }
+
     // MARK: - Resource Loading
 
     /// Find a resource file, checking every layout the installer has used. See

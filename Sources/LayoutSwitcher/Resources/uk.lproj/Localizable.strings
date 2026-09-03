@@ -86,11 +86,21 @@
 "perApp.removeHelp" = "Видалити «%@» зі списку";
 
 /* Вкладка «Словник» */
-"dictionary.importSection" = "Імпорт";
+"dictionary.section" = "Словники";
+"dictionary.wordCount" = "%d слів";
+"dictionary.countsHint" = "Вбудовані та імпортовані слова разом. Додатково враховується системний словник macOS — для російської це єдине джерело, доки не імпортуєте список.";
+"dictionary.addFile" = "Додати файл словника…";
+"dictionary.dropHint" = "або перетягніть його в це вікно";
+"dictionary.importHint" = "Текстовий файл UTF-8, одне слово в рядку. Імпортовані слова зберігаються після перезапуску.";
 "dictionary.importLanguage" = "Мова:";
-"dictionary.importHint" = "Текстовий файл UTF-8, одне слово в рядку. Слова додаються до словника цієї мови і зберігаються після перезапуску.";
+"dictionary.detected" = "Розпізнано %d слів.";
+"dictionary.ambiguous" = "%d слів, але мова неочевидна — оберіть її вище.";
+"dictionary.noneForLanguage" = "У файлі немає слів (%@).";
+"dictionary.skipped" = "Пропущено %d рядків.";
+"dictionary.add" = "Додати";
+"dictionary.cancel" = "Скасувати";
+"dictionary.importSection" = "Імпорт";
 "dictionary.noFiles" = "Файли не імпортовано.";
-"dictionary.import" = "Імпортувати файл словника…";
 "dictionary.importedFiles" = "Імпортовані файли словників";
 "dictionary.importedCount" = "Імпортовано %1$d слів із %2$@";
 "dictionary.importing" = "Імпортування %@…";

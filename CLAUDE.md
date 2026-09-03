@@ -197,8 +197,10 @@ Threshold varies by Sensitivity (Medium = 10, default).
 
 ### Dictionary Lookup Chain
 1. Bundled 50k-word lists (en_words.txt, ua_words.txt) — fast, local
-2. Imported files (Settings → Dictionary: a language picker and one Import button) plus
-   custom words stored by earlier versions — still loaded, no longer addable in the UI
+2. Imported files (Settings → Dictionary: choose or drop a file, and `DictionaryManager.survey`
+   names its language from the alphabets before anything is added — a picker pre-filled
+   with the answer, not a question asked first) plus custom words stored by earlier
+   versions, still loaded but no longer addable in the UI
 3. macOS spelling dictionaries (system-wide) — slow but comprehensive
 
 Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "при").

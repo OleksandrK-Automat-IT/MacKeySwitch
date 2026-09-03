@@ -79,7 +79,7 @@ The icon is the flag of the current layout. The menu has:
 | General | Interface language, switching pair, correction mode, launch at login |
 | Detection | Sensitivity, minimum word length |
 | Per-App Rules | Which apps are excluded |
-| Dictionary | Import extra word-list files, per language (English, Ukrainian, Russian) |
+| Dictionary | Word counts per language, and importing extra word lists — drop a file in and it names its own language |
 | Statistics | Corrections made |
 | Shortcuts | The three shortcuts, re-recordable |
 | About | Version and licence |

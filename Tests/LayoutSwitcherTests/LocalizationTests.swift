@@ -85,6 +85,8 @@ import Foundation
             "tab.general", "tab.detection", "tab.perApp", "tab.dictionary",
             "tab.statistics", "tab.hotkeys", "tab.about", "language.russian",
             "general.pair", "pair.automatic", "menu.pair", "dictionary.importLanguage",
+            "dictionary.wordCount", "dictionary.detected", "dictionary.ambiguous",
+            "dictionary.noneForLanguage", "dictionary.skipped", "dictionary.addFile",
             "hotkey.disabled", "hotkey.label", "hotkey.recording", "hotkey.hint",
             "sensitivity.low", "sensitivity.medium", "sensitivity.high", "sensitivity.veryHigh",
             "dictionary.importedCount", "stats.exceptions", "perApp.removeHelp",
