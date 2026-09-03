@@ -186,12 +186,6 @@ struct GeneralTab: View {
     @ObservedObject var settings: SettingsModel
     @ObservedObject private var l10n = Localization.shared
 
-    /// "Ukrainian ↔ English" or "Russian ↔ English", whichever pair is in force.
-    static var activePairDescription: String {
-        let cyrillic = InputSourceManager.preferredCyrillicLanguage() ?? .ukrainian
-        return L("status.pair", cyrillic.localizedName, Language.english.localizedName)
-    }
-
     var body: some View {
         Form {
             Section {
@@ -237,26 +231,6 @@ struct GeneralTab: View {
                     .foregroundColor(.secondary)
             } header: {
                 Text(L("mode.section"))
-            }
-
-            Section {
-                HStack {
-                    Text(L("status.currentLayout"))
-                    Spacer()
-                    Text(LayoutFlag.currentLayoutDisplayName)
-                        .foregroundColor(.secondary)
-                }
-
-                HStack {
-                    Text(L("status.supportedPair"))
-                    Spacer()
-                    // The pair in force right now: English with whichever Cyrillic layout
-                    // was used last. The other Cyrillic layout takes over when it is.
-                    Text(Self.activePairDescription)
-                        .foregroundColor(.secondary)
-                }
-            } header: {
-                Text(L("status.section"))
             }
         }
         .formStyle(.grouped)

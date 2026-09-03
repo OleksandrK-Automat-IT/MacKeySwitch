@@ -59,9 +59,6 @@
 "hotkey.registrationFailed" = "%1$@ %2$@ could not be registered because the shortcut is already in use.";
 
 /* Status */
-"status.section" = "Status";
-"status.currentLayout" = "Current layout:";
-"status.supportedPair" = "Active pair:";
 "status.pair" = "%1$@ ↔ %2$@";
 
 /* Detection tab */
@@ -118,7 +115,8 @@
 /* About tab */
 "about.tagline" = "Automatic Mac Keyboard Switcher";
 "about.version" = "Version %@";
-"about.description" = "Automatic keyboard layout switcher for Ukrainian, Russian and English. Switching works in pairs: English with the Cyrillic layout you used last.";
+"about.description" = "Automatic keyboard layout switcher for Ukrainian, Russian and English.
+Switching works in pairs: English with the Cyrillic layout you used last.";
 "about.detail" = "Automatically detects the wrong layout and corrects text in real time.";
 "about.author" = "Created by Oleksandr Kuzmin, 2026";
 "about.licence" = "Licensed under GNU General Public License v3.0 (GPL-3.0)";
