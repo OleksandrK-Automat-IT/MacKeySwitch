@@ -105,8 +105,6 @@
 
 /* Редактор винятків */
 "exceptions.empty" = "Винятків ще немає. Натисніть Backspace після хибного виправлення, щоб навчити програму, або додайте слово нижче.";
-"exceptions.deleteSelected" = "Видалити вибрані";
-"exceptions.selectedCount" = "вибрано: %d";
 "exceptions.clearAll" = "Очистити все";
 "exceptions.addPlaceholder" = "Додати слово-виняток…";
 "exceptions.add" = "Додати";

@@ -412,6 +412,7 @@ struct DetectionTab: View {
 
 struct PerAppTab: View {
     @ObservedObject var settings: SettingsModel
+    @ObservedObject private var l10n = Localization.shared
     @State private var showingAppPicker = false
     /// Refreshed when the tab appears and whenever an app launches or quits, so the popup
     /// never offers something that is no longer running.
@@ -790,108 +791,86 @@ struct DictionaryTab: View {
 
 struct StatisticsTab: View {
     @ObservedObject var settings: SettingsModel
+    @ObservedObject private var l10n = Localization.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            // Correction Statistics — in its own Form so it stays grouped.
-            Form {
-                Section {
-                    HStack {
-                        Text(L("stats.total"))
-                        Spacer()
-                        Text("\(settings.totalCorrections)")
-                            .monospacedDigit()
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text(L("stats.session"))
-                        Spacer()
-                        Text("\(settings.sessionCorrections)")
-                            .monospacedDigit()
-                            .foregroundColor(.secondary)
-                    }
-
-                    Button(L("stats.reset")) {
-                        settings.resetStatistics()
-                    }
-                    .foregroundColor(.red)
-                } header: {
-                    Text(L("stats.section"))
+        Form {
+            Section {
+                HStack {
+                    Text(L("stats.total"))
+                    Spacer()
+                    Text("\(settings.totalCorrections)")
+                        .monospacedDigit()
+                        .foregroundColor(.secondary)
                 }
-            }
-            .formStyle(.grouped)
-            .frame(maxHeight: 180)
 
-            // Exceptions Editor — lives outside the Form so List(selection:) renders
-            // as a proper interactive table with per-row controls.
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L("stats.exceptions", settings.exceptionWords.count))
-                    .font(.headline)
-                ExceptionsEditor(settings: settings)
+                HStack {
+                    Text(L("stats.session"))
+                    Spacer()
+                    Text("\(settings.sessionCorrections)")
+                        .monospacedDigit()
+                        .foregroundColor(.secondary)
+                }
+
+                Button(L("stats.reset")) {
+                    settings.resetStatistics()
+                }
+                .foregroundColor(.red)
+            } header: {
+                Text(L("stats.section"))
             }
-            .padding(.horizontal)
+
+            // Same form as the statistics, so the two blocks share insets and width. The
+            // editor used to sit outside in its own stack, and its ideal width was wider
+            // than the window — it rendered centred and cut off at both edges.
+            Section {
+                ExceptionsEditor(settings: settings)
+            } header: {
+                Text(L("stats.exceptions", settings.exceptionWords.count))
+            }
         }
-        .padding(.vertical)
+        .formStyle(.grouped)
     }
 }
 
 // MARK: - Exceptions Editor
 
-/// List of self-learned exception words with per-row editing, per-row delete,
-/// multi-select + bulk delete, and a "Clear All" action.
+/// The self-learned exception words as form rows: each editable in place and deletable,
+/// a "Clear All", and a field to add one by hand.
 struct ExceptionsEditor: View {
     @ObservedObject var settings: SettingsModel
-    @State private var selection = Set<String>()
+    @ObservedObject private var l10n = Localization.shared
     @State private var newWord: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if settings.exceptionWords.isEmpty {
-                Text(L("exceptions.empty"))
-                    .foregroundColor(.secondary)
-                    .font(.caption)
-            } else {
-                // Multi-select List. Each row has an inline TextField + delete button.
-                List(selection: $selection) {
-                    ForEach(settings.exceptionWords, id: \.self) { word in
-                        ExceptionRow(
-                            word: word,
-                            onCommit: { newValue in commit(newValue, replacing: word) },
-                            onDelete: { deleteWord(word) }
-                        )
-                        .tag(word)
-                    }
-                }
-                .frame(minHeight: 140, maxHeight: 200)
-
-                HStack {
-                    Button(L("exceptions.deleteSelected")) { deleteSelected() }
-                        .disabled(selection.isEmpty)
-
-                    Text(L("exceptions.selectedCount", selection.count))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Button(L("exceptions.clearAll")) {
-                        settings.exceptionWords.removeAll()
-                        selection.removeAll()
-                    }
-                    .foregroundColor(.red)
-                }
+        if settings.exceptionWords.isEmpty {
+            Text(L("exceptions.empty"))
+                .foregroundColor(.secondary)
+                .font(.caption)
+        } else {
+            ForEach(settings.exceptionWords, id: \.self) { word in
+                ExceptionRow(
+                    word: word,
+                    onCommit: { newValue in commit(newValue, replacing: word) },
+                    onDelete: { deleteWord(word) }
+                )
             }
-
-            Divider()
 
             HStack {
-                TextField(L("exceptions.addPlaceholder"), text: $newWord)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit { addWord() }
-                Button(L("exceptions.add")) { addWord() }
-                    .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
+                Spacer()
+                Button(L("exceptions.clearAll")) {
+                    settings.exceptionWords.removeAll()
+                }
+                .foregroundColor(.red)
             }
+        }
+
+        HStack {
+            TextField(L("exceptions.addPlaceholder"), text: $newWord)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { addWord() }
+            Button(L("exceptions.add")) { addWord() }
+                .disabled(newWord.trimmingCharacters(in: .whitespaces).isEmpty)
         }
     }
 
@@ -902,32 +881,16 @@ struct ExceptionsEditor: View {
         guard normalized != old else { return }
         guard let index = settings.exceptionWords.firstIndex(of: old) else { return }
 
-        // Empty text removes the word.
-        if normalized.isEmpty {
+        // Empty text removes the word; so does editing it into one already present.
+        if normalized.isEmpty || settings.exceptionWords.contains(normalized) {
             settings.exceptionWords.remove(at: index)
-            selection.remove(old)
-            return
-        }
-        // Deduplicate: if edited to a value already present elsewhere, drop this row.
-        if settings.exceptionWords.contains(normalized) {
-            settings.exceptionWords.remove(at: index)
-            selection.remove(old)
             return
         }
         settings.exceptionWords[index] = normalized
-        if selection.remove(old) != nil {
-            selection.insert(normalized)
-        }
     }
 
     private func deleteWord(_ word: String) {
         settings.exceptionWords.removeAll { $0 == word }
-        selection.remove(word)
-    }
-
-    private func deleteSelected() {
-        settings.exceptionWords.removeAll { selection.contains($0) }
-        selection.removeAll()
     }
 
     private func addWord() {
@@ -953,6 +916,7 @@ private struct ExceptionRow: View {
     let word: String
     let onCommit: (String) -> Void
     let onDelete: () -> Void
+    @ObservedObject private var l10n = Localization.shared
 
     @State private var text: String = ""
     @FocusState private var isFocused: Bool

@@ -105,8 +105,6 @@
 
 /* Exceptions editor */
 "exceptions.empty" = "No learned exceptions yet. Backspace after a wrong correction to teach the app, or add one below.";
-"exceptions.deleteSelected" = "Delete Selected";
-"exceptions.selectedCount" = "%d selected";
 "exceptions.clearAll" = "Clear All";
 "exceptions.addPlaceholder" = "Add exception word…";
 "exceptions.add" = "Add";
