@@ -112,9 +112,22 @@ Settings has a recorder for all three, which is easier.
 
 A correction requires the other-layout reading to be a real word, at every sensitivity.
 Without that there is nothing to separate a wrong-layout word from a name, a brand or an
-inflection the dictionaries do not list. Word lookup goes to the bundled 50k lists first,
-then to the macOS spelling dictionaries. Russian has no bundled list: it relies on the
-macOS dictionary plus whatever you add or import in the Dictionary tab.
+inflection the dictionaries do not list. Word lookup goes to the bundled 100k
+frequency-ranked lists first — English, Ukrainian and Russian — then to whatever you have
+imported, then to the macOS spelling dictionaries.
+
+### Adding your own words
+
+The Dictionary tab takes any UTF-8 text file with one word per line. Choose it with **Add
+Dictionary File…** or drag it onto the window; the app reads it first and tells you what it
+found — how many words, in which language, and how many lines it could not use. The
+language is detected from the alphabets and shown in a menu you can correct, so a list
+never lands in the wrong dictionary by accident. Imported files are remembered and reloaded
+at every launch, and the tab shows what each language currently knows.
+
+Larger source lists for all three languages are in [`dictionaries/`](dictionaries/) — the
+full inflected forms the bundled lists are generated from. They are not compiled into the
+app; import one if you want the coverage.
 
 Missing a correction is a nuisance; rewriting correct input destroys it. Where the evidence
 cannot tell the two apart, the text is left alone.

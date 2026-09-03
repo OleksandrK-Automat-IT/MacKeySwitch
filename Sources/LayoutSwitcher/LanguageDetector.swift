@@ -1,7 +1,7 @@
 import Foundation
 
 /// Dictionary lookups the detector needs. A protocol so the scoring logic can be
-/// exercised in tests against a fixed word list instead of the 50k bundled corpus.
+/// exercised in tests against a fixed word list instead of the bundled corpus.
 protocol WordSource {
     func isWord(_ word: String, language: Language) -> Bool
     func isPrefix(_ prefix: String, language: Language) -> Bool
@@ -132,7 +132,7 @@ struct LanguageDetector {
         // reading has to be a real word. The supporting signals cannot supply that on
         // their own — `currentPrefixInvalid` and friends only say "no dictionary knows
         // this", which is equally true of names, brands, slang, inflected forms and
-        // anything outside the 50k lists. Scoring alone let that reach the threshold at
+        // anything outside the bundled lists. Scoring alone let that reach the threshold at
         // the two most aggressive settings (a bare `currentPrefixInvalid` scores 2, the
         // Very High threshold exactly), so correctly typed words the dictionaries did not
         // happen to contain — "київ", "компютер" — were silently replaced with gibberish.

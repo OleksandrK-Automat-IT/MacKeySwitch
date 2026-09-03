@@ -58,9 +58,9 @@ import Testing
         #expect(ProtoLanguage.couldBe("привіт", language: .ukrainian))
     }
 
-    /// Words the 50k corpus does not contain, so the corpus test cannot defend them —
-    /// each of these once carried a listed "impossible" bigram and pushed correct typing
-    /// toward being rewritten.
+    /// Words an earlier corpus did not contain, so its corpus test could not defend them.
+    /// Each once carried a listed "impossible" bigram and pushed correct typing toward
+    /// being rewritten.
     @Test(arguments: ["досьє", "ательє", "портьє", "шафка", "розщеплення", "безщасний"])
     func realUkrainianWordsAreNotFlaggedAsImpossible(word: String) {
         #expect(!ProtoLanguage.hasImpossibleUkrainianBigram(word))

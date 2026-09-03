@@ -90,7 +90,7 @@ import Testing
         #expect(detect("vkzx", layout: .english, sensitivity: sensitivity) == nil)
     }
 
-    /// The regression that prompted the gate: real words the 50k lists happen not to
+    /// The regression that prompted the gate: real words the bundled lists happen not to
     /// contain scored 2 on `currentPrefixInvalid` alone — exactly the Very High threshold —
     /// and were replaced with Latin gibberish as the user typed.
     @Test(arguments: [SettingsModel.Sensitivity.low, .medium, .high, .veryHigh])

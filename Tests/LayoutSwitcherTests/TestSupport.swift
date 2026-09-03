@@ -7,6 +7,7 @@ import Foundation
 enum Corpus {
     static let english = load("en_words")
     static let ukrainian = load("ua_words")
+    static let russian = load("ru_words")
 
     private static func load(_ name: String) -> [String] {
         let url = URL(fileURLWithPath: #filePath)
@@ -22,7 +23,7 @@ enum Corpus {
 }
 
 /// A `WordSource` backed by an explicit word list, so detector tests state their inputs
-/// instead of depending on what happens to be in the 50k corpus.
+/// instead of depending on what happens to be in the bundled corpus.
 struct StubDictionary: WordSource {
     var english: Set<String> = []
     var ukrainian: Set<String> = []

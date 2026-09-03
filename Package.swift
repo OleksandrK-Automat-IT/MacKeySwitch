@@ -18,6 +18,8 @@ let package = Package(
             resources: [
                 .copy("Resources/en_words.txt"),
                 .copy("Resources/ua_words.txt"),
+                .copy("Resources/ru_words.txt"),
+                .copy("Resources/DICTIONARY-NOTICES.md"),
                 // `.copy` rather than `.process`: the app picks its own `.lproj` at runtime
                 // (Settings → Interface language), so the directories have to survive into
                 // the bundle verbatim instead of being folded into SwiftPM's own

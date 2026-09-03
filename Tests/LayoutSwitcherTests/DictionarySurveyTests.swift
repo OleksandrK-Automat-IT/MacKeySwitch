@@ -23,7 +23,7 @@ import Foundation
     }
 
     @Test func theBundledListsAreNamedCorrectly() throws {
-        // The real thing, not a handful of hand-picked words: a 50k list carries loanwords,
+        // The real thing, not a handful of hand-picked words: a large list carries loanwords,
         // abbreviations and proper nouns, and detection has to survive them.
         for (resource, expected) in [("en_words", Language.english), ("ua_words", .ukrainian)] {
             let url = try #require(ResourceBundle.url(forResource: resource, extension: "txt"))
@@ -36,6 +36,26 @@ import Foundation
     @Test func aMixedFileRefusesToGuess() throws {
         // Half Latin, half Cyrillic: no majority, so the user is asked rather than told.
         let url = try file(["hello", "world", "wisdom", "привіт", "завжди", "їжак"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        #expect(DictionaryManager.survey(url: url)?.detected == nil)
+    }
+
+    @Test func theCyrillicPairIsDecidedOnExclusiveWordsNotTotals() throws {
+        // A Russian list where most words could also be Ukrainian — the real one scores
+        // 1.23:1, which no margin on totals can separate. The words only Russian can
+        // spell are what settles it.
+        let url = try file(["ток", "сон", "рот", "кот", "мышь", "ёж"])
+        defer { try? FileManager.default.removeItem(at: url) }
+        let survey = try #require(DictionaryManager.survey(url: url))
+        #expect(survey.usable[.ukrainian] == 4)
+        #expect(survey.usable[.russian] == 6)
+        #expect(survey.exclusive[.russian] == 2)
+        #expect(survey.exclusive[.ukrainian] == nil)
+        #expect(survey.detected == .russian)
+    }
+
+    @Test func aFileWithBothCyrillicAlphabetsRefusesToGuess() throws {
+        let url = try file(["мышь", "ёж", "їжак", "ґанок"])
         defer { try? FileManager.default.removeItem(at: url) }
         #expect(DictionaryManager.survey(url: url)?.detected == nil)
     }
@@ -71,8 +91,8 @@ import Foundation
     @Test func countsReportEveryLanguage() {
         let manager = DictionaryManager()
         let counts = manager.wordCounts()
-        #expect(counts[.english] ?? 0 > 40_000)
-        #expect(counts[.ukrainian] ?? 0 > 40_000)
-        #expect(counts[.russian] == 0, "nothing is bundled for Russian")
+        for language in Language.allCases {
+            #expect(counts[language] ?? 0 > 90_000, "\(language.rawValue)")
+        }
     }
 }

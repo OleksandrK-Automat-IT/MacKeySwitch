@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_NAME="MacKeySwitch"
 BUNDLE_ID="com.okuzmin.mackeyswitch"
-VERSION="2.0"
+VERSION="2.1"
 OUTPUT_DIR="$PROJECT_DIR/dist"
 
 echo "=== Building $APP_NAME v$VERSION ==="
@@ -77,7 +77,7 @@ ln -s /Applications "$DMG_DIR/Applications"
 
 # Create a simple README
 cat > "$DMG_DIR/README.txt" << 'README'
-MacKeySwitch v2.0
+MacKeySwitch v2.1
 Automatic Mac Keyboard Switcher
 ================================
 

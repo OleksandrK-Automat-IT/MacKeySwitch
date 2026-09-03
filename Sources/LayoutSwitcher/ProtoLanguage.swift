@@ -10,21 +10,21 @@ import Foundation
 ///
 /// When adding a pair, run the tests: the corpus is the arbiter. Note the corpus can only
 /// disprove a pair, never confirm one — a few entries were also removed by hand because
-/// they are ordinary Ukrainian ("цю", "гт" as in "нігті", "зш" as in "зшити") that the
-/// 50k word list simply does not happen to cover.
+/// they are ordinary Ukrainian ("цю", "гт" as in "нігті", "зш" as in "зшити") that an
+/// earlier, smaller word list simply did not happen to cover.
 struct ProtoLanguage {
 
     // MARK: - English Impossible Bigrams
 
     /// Two-character sequences that never occur in English words.
     /// Almost all involve q, j, x, z or v followed by another consonant.
-    /// Removed by hand despite passing the corpus test: "gz" (zigzag),
-    /// "zv" (rendezvous) — real words the 50k list happens not to contain.
+    /// Removed by hand despite passing an earlier corpus test: "gz" (zigzag),
+    /// "zv" (rendezvous) — real words that corpus happened not to contain.
     static let englishImpossibleBigrams: Set<String> = [
-        "bq", "cj", "cx", "fq", "gq", "gx", "hx", "jb", "jf", "jk", "jq",
-        "jv", "jx", "jz", "kj", "kq", "kx", "kz", "mq", "pz", "qb", "qc", "qf",
+        "cj", "cx", "fq", "gq", "gx", "hx", "jb", "jf", "jk", "jq",
+        "jv", "jx", "jz", "kx", "qb", "qc", "qf",
         "qg", "qj", "qk", "qx", "qz", "sx", "tq", "vf", "vj", "vk", "vm", "vq",
-        "vx", "wq", "wx", "xj", "xk", "xn", "xq", "xz", "zf", "zk", "zq",
+        "vx", "wq", "wx", "xj", "xk", "xz", "zf", "zq",
         "zx",
     ]
 
@@ -39,7 +39,7 @@ struct ProtoLanguage {
         "сї", "тї", "фї", "хї", "цї", "чї", "шї", "щї", "ґї",
         // є and ю after hushing consonants and ц — these take е and у instead.
         "жє", "хє", "цє", "чє", "шє", "щє", "ґє",
-        "жю", "хю", "чю", "шю", "щю", "ґю",
+        "хю", "щю", "ґю",
         // щ followed by another consonant.
         "щб", "щг", "щд", "щж", "щз", "щк", "щл", "щм", "щп", "щр", "щс", "щт",
         "щф", "щх", "щц", "щч", "щш", "щщ", "щґ",
@@ -51,10 +51,10 @@ struct ProtoLanguage {
         "ґч", "ґш", "ґщ",
         // ф is rare in native words and does not cluster with these. "фк" is NOT
         // here: it occurs in diminutives (шафка).
-        "фд", "фж", "фз", "фм", "фп", "фх", "фц", "фш", "фщ", "фґ", "гф",
+        "фд", "фж", "фз", "фп", "фх", "фц", "фщ", "фґ", "гф",
         // ж and з clusters that do not occur. "зщ" is NOT here: it occurs across
         // the prefix boundary (розщеплення, безщасний).
-        "жп", "жт", "жф", "жх", "жш", "жщ",
+        "жп", "жф", "жх", "жш", "жщ",
         // Doubled consonants that never occur.
         "хх",
     ]

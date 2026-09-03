@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 APP_NAME="MacKeySwitch"
 BUNDLE_ID="com.okuzmin.mackeyswitch"
-VERSION="2.0"
+VERSION="2.1"
 DEPLOYMENT_TARGET="13.0"
 OUTPUT_DIR="$PROJECT_DIR/dist"
 APP_BUNDLE="$OUTPUT_DIR/$APP_NAME.app"
@@ -64,13 +64,26 @@ mkdir -p "$APP_DIR/MacOS" "$APP_DIR/Resources"
 cp "$BINARY" "$APP_DIR/MacOS/LayoutSwitcher"
 
 # Copy dictionary resources
+# Copied by pattern, not by name: the list used to be spelled out here, and adding a
+# language meant remembering to add it in this file too. Russian was added and this was
+# not — the app would have shipped without its dictionary, which no test can catch.
 if [ -d "$BUNDLE_DIR" ]; then
-    cp "$BUNDLE_DIR/en_words.txt" "$APP_DIR/Resources/"
-    cp "$BUNDLE_DIR/ua_words.txt" "$APP_DIR/Resources/"
+    RESOURCE_SOURCE="$BUNDLE_DIR"
 else
     echo "   WARNING: Resource bundle not found, copying from Sources"
-    cp "$PROJECT_DIR/Sources/LayoutSwitcher/Resources/en_words.txt" "$APP_DIR/Resources/"
-    cp "$PROJECT_DIR/Sources/LayoutSwitcher/Resources/ua_words.txt" "$APP_DIR/Resources/"
+    RESOURCE_SOURCE="$PROJECT_DIR/Sources/LayoutSwitcher/Resources"
+fi
+DICTIONARIES_COPIED=0
+for resource in "$RESOURCE_SOURCE"/*_words.txt "$RESOURCE_SOURCE"/DICTIONARY-NOTICES.md; do
+    [ -f "$resource" ] || continue
+    cp "$resource" "$APP_DIR/Resources/"
+    case "$resource" in *_words.txt) DICTIONARIES_COPIED=$((DICTIONARIES_COPIED + 1)) ;; esac
+done
+# One per language the app knows. A missing file is a silent loss of corrections, so it
+# stops the build rather than shipping.
+if [ "$DICTIONARIES_COPIED" -lt 3 ]; then
+    echo "ERROR: expected 3 bundled dictionaries, copied $DICTIONARIES_COPIED from $RESOURCE_SOURCE"
+    exit 1
 fi
 
 # Copy the interface translations to Contents/Resources/<code>.lproj — the standard place

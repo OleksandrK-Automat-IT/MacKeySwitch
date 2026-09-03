@@ -6,9 +6,9 @@ import Foundation
 /// stub. The unit tests in LanguageDetectorTests prove the scoring is right; these prove
 /// the scoring is fed data good enough to act on.
 ///
-/// This is the gap that made the app look dead: the bundled Ukrainian list has no word
-/// beginning "при", nor "дякую", "добре", "треба" or "тобі", so common words could not
-/// reach the confidence threshold and were silently left alone.
+/// The frequency corpus must carry everyday words itself. The system dictionary is still
+/// exercised as a fallback, but the app's basic correction path may not depend on an
+/// optional macOS language dictionary being installed.
 @Suite struct DictionaryCoverageTests {
 
     /// Keystrokes for a Ukrainian word typed with the US layout still active.
@@ -51,15 +51,14 @@ import Foundation
                 "'\(word)' was rewritten as Ukrainian")
     }
 
-    @Test func theBundledUkrainianListAloneIsNotEnough() {
-        // Documents why the system dictionary is consulted at all. If a future word list
-        // fixes these holes this test should be updated, not deleted — it is the reason
-        // the SystemSpellChecker dependency exists.
-        #expect(!DictionaryManager.shared.isUkrainianWord("привіт"))
-        #expect(!DictionaryManager.shared.isUkrainianWord("дякую"))
+    @Test func theBundledUkrainianListCarriesEverydayWordsOffline() {
+        #expect(DictionaryManager.shared.isUkrainianWord("привіт"))
+        #expect(DictionaryManager.shared.isUkrainianWord("дякую"))
+        #expect(DictionaryManager.shared.isUkrainianWord("клавіатура"))
+        #expect(DictionaryManager.shared.isUkrainianWord("налаштування"))
         #expect(DictionaryManager.shared.isEnglishWord("hello"),
                 "the test process did not load the bundled dictionaries")
-        // ...but the app as a whole does know them.
+        // The combined lookup continues to know them as well.
         #expect(DictionaryManager.shared.isWord("привіт", language: .ukrainian))
         #expect(DictionaryManager.shared.isWord("дякую", language: .ukrainian))
     }

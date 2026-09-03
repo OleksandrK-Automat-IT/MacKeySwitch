@@ -50,6 +50,13 @@ import Testing
         #expect(!WordFilter.shouldSkip(".yfr"))
     }
 
+    @Test(arguments: ["vf.nm", "ghfw.dfnb", "dbrjhbcnjde.nm"])
+    func wrongLayoutWordsWithUnknownDomainLikeTailsPassThrough(text: String) {
+        // These are real Ukrainian forms typed on US. A generic two-letter TLD rule used
+        // to discard them before the dictionary could see them.
+        #expect(!WordFilter.shouldSkip(text))
+    }
+
     @Test func capitalisedWordsPassThrough() {
         // "Привіт" is "Ghbdsn" — a leading capital is not camelCase.
         #expect(!WordFilter.shouldSkip("Ghbdsn"))

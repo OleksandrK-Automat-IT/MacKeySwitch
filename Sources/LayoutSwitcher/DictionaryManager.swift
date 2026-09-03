@@ -6,8 +6,6 @@ final class DictionaryManager: WordSource {
 
     private var englishWords: Set<String> = []
     private var ukrainianWords: Set<String> = []
-    /// No bundled list ships for Russian; the system dictionary carries it. Imports land
-    /// here so the lookup chain is the same shape for every language.
     private var russianWords: Set<String> = []
 
     // Prefix sets for fast partial-word lookup (first 3 chars of every word)
@@ -129,9 +127,7 @@ final class DictionaryManager: WordSource {
         // files took to read, which for a 370k-word file is a quarter of a second.
         var en = Self.readBundled("en_words").map(Self.parseWordList) ?? []
         var ua = Self.readBundled("ua_words").map(Self.parseWordList) ?? []
-        // No bundled Russian list: whatever the user adds or imports is all there is here,
-        // and the system dictionary carries the rest.
-        var ru: [String] = []
+        var ru = Self.readBundled("ru_words").map(Self.parseWordList) ?? []
         en += customEnglishWords.map { $0.lowercased() }
         ua += customUkrainianWords.map { $0.lowercased() }
         ru += customRussianWords.map { $0.lowercased() }
@@ -173,6 +169,8 @@ final class DictionaryManager: WordSource {
         var enPrefix: Set<String> = []
         var uaSet: Set<String> = []
         var uaPrefix: Set<String> = []
+        var ruSet: Set<String> = []
+        var ruPrefix: Set<String> = []
 
         if let enContent = findResource("en_words", ext: "txt")
             .flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) {
@@ -182,18 +180,25 @@ final class DictionaryManager: WordSource {
             .flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) {
             (uaSet, uaPrefix) = Self.index(Self.parseWordList(uaContent))
         }
+        if let ruContent = findResource("ru_words", ext: "txt")
+            .flatMap({ try? String(contentsOf: $0, encoding: .utf8) }) {
+            (ruSet, ruPrefix) = Self.index(Self.parseWordList(ruContent))
+        }
 
         lock.lock()
         englishWords = enSet
         englishPrefixes = enPrefix
         ukrainianWords = uaSet
         ukrainianPrefixes = uaPrefix
+        russianWords = ruSet
+        russianPrefixes = ruPrefix
         let enCount = englishWords.count
         let uaCount = ukrainianWords.count
+        let ruCount = russianWords.count
         lock.unlock()
 
         let elapsed = CFAbsoluteTimeGetCurrent() - start
-        print("[LayoutSwitcher] Dictionaries loaded: EN=\(enCount) words, UA=\(uaCount) words (\(String(format: "%.1f", elapsed * 1000))ms)")
+        print("[LayoutSwitcher] Dictionaries loaded: EN=\(enCount), UA=\(uaCount), RU=\(ruCount) words (\(String(format: "%.1f", elapsed * 1000))ms)")
     }
 
     // MARK: - WordSource
@@ -201,11 +206,9 @@ final class DictionaryManager: WordSource {
     /// The bundled list first — a plain set lookup, and it holds the user's custom words —
     /// then the system dictionary, which is what actually provides usable coverage.
     ///
-    /// The bundled Ukrainian list is missing most everyday vocabulary: it contains no word
-    /// beginning "при" at all, nor "дякую", "добре", "треба", "тобі". Since a correction
-    /// cannot reach the confidence threshold without a dictionary hit, those words were
-    /// never corrected — the feature looked broken while the detector was working exactly
-    /// as designed on the data it had.
+    /// The bundled frequency dictionaries provide the fast path and deliberate offline
+    /// coverage; the system dictionary remains the fallback for names, rare inflections,
+    /// and words added after the bundled corpus was generated.
     func isWord(_ word: String, language: Language) -> Bool {
         let bundled: Bool
         switch language {
@@ -230,9 +233,10 @@ final class DictionaryManager: WordSource {
         return russianWords.contains(lower)
     }
 
-    /// With no corpus there is no basis for calling a prefix invalid, so an empty index
-    /// answers "could be" — the same answer the other languages give for a prefix too
-    /// short to judge. Anything else would hand every Russian word a bonus it did not earn.
+    /// The empty-index case answers "could be" rather than "invalid": with no corpus there
+    /// is no basis for the latter. It stopped being the normal path once a Russian list
+    /// started shipping, but a build without one must not hand every Russian word a bonus
+    /// it did not earn.
     func isRussianPrefix(_ prefix: String) -> Bool {
         let lower = prefix.lowercased()
         guard lower.count >= 3 else { return true }
@@ -290,33 +294,44 @@ final class DictionaryManager: WordSource {
 
     /// What a word-list file turns out to be, read before anything is added.
     struct FileSurvey: Equatable {
-        /// Words that belong to exactly one of the three alphabets, per language.
+        /// Words spellable in each language's alphabet. A word of only the letters
+        /// Ukrainian and Russian share counts for both.
         let usable: [Language: Int]
+        /// Words spellable in exactly one language. The only evidence that separates the
+        /// two Cyrillic alphabets.
+        let exclusive: [Language: Int]
         /// Lines that are no language's word: markup, frequencies, Hunspell flags, prose.
         let unusable: Int
 
         /// The language this file is, or nil when the file cannot say.
         ///
-        /// A word list is not perfectly clean — English lists carry Cyrillic loanwords and
-        /// Ukrainian ones carry Latin abbreviations — so this asks for a clear majority
-        /// rather than purity. Ukrainian and Russian overlap heavily, and a file of only
-        /// their shared letters counts for both; the winner has to be ahead by a margin,
-        /// otherwise the user is asked.
+        /// Two questions, because they need different evidence. Latin and Cyrillic share
+        /// no letters, so the totals settle the script outright. Ukrainian and Russian
+        /// share most of theirs, and the totals barely separate them — the real 150k
+        /// Russian list scores only 1.23:1 over Ukrainian, inside any sane margin, because
+        /// most Russian words can also be spelled with Ukrainian letters. So the second
+        /// question is decided on words that *no* other alphabet can spell: the same list
+        /// has 28,307 of those and Ukrainian has none of them.
         var detected: Language? {
-            let ranked = usable.sorted { $0.value > $1.value }
-            guard let best = ranked.first, best.value > 0 else { return nil }
-            let runnerUp = ranked.dropFirst().first?.value ?? 0
-            guard Double(best.value) >= Double(runnerUp) * Self.winningMargin else { return nil }
-            return best.key
+            let english = Double(usable[.english] ?? 0)
+            let cyrillic = Double(max(usable[.ukrainian] ?? 0, usable[.russian] ?? 0))
+
+            if english > 0, english >= cyrillic * Self.winningMargin { return .english }
+            guard cyrillic > 0, cyrillic >= english * Self.winningMargin else { return nil }
+
+            let ukrainian = Double(exclusive[.ukrainian] ?? 0)
+            let russian = Double(exclusive[.russian] ?? 0)
+            // Nothing but shared letters: a real answer exists, but not in this file.
+            guard ukrainian > 0 || russian > 0 else { return nil }
+            if ukrainian >= russian * Self.winningMargin { return .ukrainian }
+            if russian >= ukrainian * Self.winningMargin { return .russian }
+            return nil
         }
 
         var totalUsable: Int { usable.values.reduce(0, +) }
 
-        /// How far ahead the leader must be. Ukrainian and Russian share most of their
-        /// alphabet, so a Ukrainian list scores under Russian too — for every word without
-        /// і, ї, є or ґ in it. Measured on the bundled Ukrainian list, which scores about
-        /// 1.6× for Ukrainian over Russian; 1.25 leaves room for a list of any register
-        /// while still refusing a genuinely mixed file.
+        /// How far ahead the winner must be before the file is taken at its word. Applied
+        /// to whichever evidence is doing the deciding.
         static let winningMargin = 1.25
     }
 
@@ -329,16 +344,15 @@ final class DictionaryManager: WordSource {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let words = parseWordList(content)
         var usable: [Language: Int] = [:]
+        var exclusive: [Language: Int] = [:]
         var unusable = 0
         for word in words {
-            var matched = false
-            for language in Language.allCases where isValidImportedWord(word, language: language) {
-                usable[language, default: 0] += 1
-                matched = true
-            }
-            if !matched { unusable += 1 }
+            let fits = Language.allCases.filter { isValidImportedWord(word, language: $0) }
+            for language in fits { usable[language, default: 0] += 1 }
+            if let only = fits.first, fits.count == 1 { exclusive[only, default: 0] += 1 }
+            if fits.isEmpty { unusable += 1 }
         }
-        return FileSurvey(usable: usable, unusable: unusable)
+        return FileSurvey(usable: usable, exclusive: exclusive, unusable: unusable)
     }
 
     // MARK: - Resource Loading

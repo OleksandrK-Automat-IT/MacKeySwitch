@@ -196,11 +196,12 @@ import Foundation
         #expect(!ProtoLanguage.hasImpossibleBigram("привет", language: .russian))
     }
 
-    @Test func theSystemDictionaryCarriesRussian() throws {
+    @Test func russianIsBackedByABundledListAndTheSystemDictionary() throws {
         try #require(SystemSpellChecker.shared.supports(.russian))
         #expect(DictionaryManager.shared.isWord("привет", language: .russian))
         #expect(!DictionaryManager.shared.isWord("привіт", language: .russian))
-        #expect(DictionaryManager.shared.isPrefix("зхч", language: .russian),
-                "no corpus, so no prefix can be called invalid")
+        // The bundled list now judges prefixes, as it does for the other two languages.
+        #expect(DictionaryManager.shared.isPrefix("при", language: .russian))
+        #expect(!DictionaryManager.shared.isPrefix("зхч", language: .russian))
     }
 }

@@ -3,12 +3,10 @@ import Foundation
 
 /// Word lookup backed by the macOS spelling dictionaries.
 ///
-/// The bundled 50k word lists have holes wide enough to disable the whole feature. The
-/// Ukrainian list contains no word beginning "при" at all, so "привіт", "приїхати" and
-/// everything like them were unknown; "дякую", "добре", "треба" and "тобі" are missing
-/// too. Since a correction needs a dictionary hit to reach the confidence threshold, those
-/// words were simply never corrected. macOS ships a complete Ukrainian dictionary, it is
-/// already installed, and a lookup costs ~0.13ms — far cheaper than being wrong.
+/// macOS spelling dictionaries complement the bundled frequency lists with names, rare
+/// inflections, and vocabulary added after the app's corpus was generated. A correction
+/// requires a dictionary hit, so this fallback preserves coverage without making the
+/// bundled files unbounded.
 ///
 /// The bundled lists stay as a first-pass cache and as a fallback when a language is not
 /// installed on the machine.
