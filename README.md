@@ -76,11 +76,12 @@ The icon is the flag of the current layout. The menu has:
 
 | Tab | What is there |
 | --- | --- |
-| General | Interface language, correction mode, the three shortcuts, launch at login |
-| Detection | Sensitivity, minimum word length, correction delay |
+| General | Interface language, switching pair, correction mode, launch at login |
+| Detection | Sensitivity, minimum word length |
 | Per-App Rules | Which apps are excluded |
-| Dictionary | Custom words and extra word-list files, per language (English, Ukrainian, Russian) |
+| Dictionary | Import extra word-list files, per language (English, Ukrainian, Russian) |
 | Statistics | Corrections made |
+| Shortcuts | The three shortcuts, re-recordable |
 | About | Version and licence |
 
 ### Shortcuts via Terminal

@@ -83,11 +83,12 @@ import Foundation
             "menu.correctionsWithTotal", "menu.settings", "menu.quit", "window.settings",
             "language.english", "language.ukrainian", "language.other", "language.system",
             "tab.general", "tab.detection", "tab.perApp", "tab.dictionary",
-            "tab.statistics", "tab.about",
+            "tab.statistics", "tab.hotkeys", "tab.about", "language.russian",
+            "general.pair", "pair.automatic", "menu.pair", "dictionary.importLanguage",
             "hotkey.disabled", "hotkey.label", "hotkey.recording", "hotkey.hint",
             "sensitivity.low", "sensitivity.medium", "sensitivity.high", "sensitivity.veryHigh",
             "dictionary.importedCount", "stats.exceptions", "perApp.removeHelp",
-            "about.version", "detection.delayValue", "detection.minLength",
+            "about.version", "detection.minLength",
         ]
         for key in used {
             #expect(Self.english[key] != nil, "'\(key)' is used in code but missing from en.lproj")

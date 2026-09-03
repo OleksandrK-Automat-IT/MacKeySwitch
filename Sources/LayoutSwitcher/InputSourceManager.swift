@@ -113,9 +113,16 @@ final class InputSourceManager {
     /// nothing for an English word to be corrected into, and the engine leaves it alone.
     static func preferredCyrillicLanguage() -> Language? {
         let enabled = enabledSources().compactMap { language(ofSourceID: $0.id) }
+        // A pinned pair wins — as long as that layout is actually enabled; otherwise the
+        // pin would name a layout the switch cannot reach, and automatic is the safe answer.
+        if let pinned = pinnedCyrillic, enabled.contains(pinned) { return pinned }
         if let last = lastUsedCyrillic, enabled.contains(last) { return last }
         return enabled.first { $0.isCyrillic }
     }
+
+    /// The Cyrillic layout the user chose in Settings, or nil to follow the last-used one.
+    /// Set from the settings observer in AppDelegate; nothing else writes it.
+    static var pinnedCyrillic: Language?
 
     /// The exact source whose geometry will be used for a language switch. Correction
     /// planning needs this before the switch because two Ukrainian layouts map И/І to

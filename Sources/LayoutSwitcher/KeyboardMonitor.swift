@@ -296,7 +296,7 @@ final class KeyboardMonitor {
         _correctionContextDirty = false
         stateLock.unlock()
 
-        let delayMs = settings?.correctionDelayMs ?? 10
+        let delayMs = Self.eraseToRetypeGapMs
         let notify = kind == .correction(automatic: true) && (settings?.showNotifications ?? false)
 
         correctionQueue.async { [weak self] in
@@ -390,6 +390,12 @@ final class KeyboardMonitor {
 
     /// How long the boundary key is given to land before the first backspace goes out.
     private static let settleBeforeCorrectionUs: UInt32 = 20_000
+
+    /// Pause between erasing the word and retyping it. Not needed for ordering — synthetic
+    /// events are delivered in the order posted — but a small margin for apps that fall
+    /// behind on rapid input. This used to be a slider (10–200 ms); nobody ever needed more
+    /// than the floor, and a slider whose only good position is its minimum is a trap.
+    private static let eraseToRetypeGapMs = 10
 
     /// Pause between synthetic keys. Events posted to the session tap are delivered in the
     /// order posted, so the gap is not for ordering — it is a small margin for apps that

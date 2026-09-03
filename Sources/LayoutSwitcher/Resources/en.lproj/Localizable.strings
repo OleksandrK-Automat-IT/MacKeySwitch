@@ -8,6 +8,7 @@
 "menu.currentLayout" = "Current: %@";
 "menu.corrections" = "Corrections: %d";
 "menu.correctionsWithTotal" = "Corrections: %1$d (total: %2$d)";
+"menu.pair" = "Switching Pair";
 "menu.settings" = "Settings...";
 "window.settings" = "MacKeySwitch Settings";
 "menu.quit" = "Quit MacKeySwitch";
@@ -24,6 +25,7 @@
 "tab.detection" = "Detection";
 "tab.perApp" = "Per-App Rules";
 "tab.dictionary" = "Dictionary";
+"tab.hotkeys" = "Shortcuts";
 "tab.statistics" = "Statistics";
 "tab.about" = "About";
 
@@ -33,12 +35,16 @@
 "general.startAtLogin" = "Start at login";
 "general.showNotifications" = "Show notification on switch";
 "general.language" = "Interface language";
+"general.pair" = "Switching pair:";
+"general.pairHint" = "Which Cyrillic layout English words are corrected into. Automatic follows the layout you used last. A Cyrillic layout always goes back to English.";
 "general.languageHint" = "Applies immediately. \"System\" follows your language order in System Settings.";
 
 /* Undo hotkey */
-"hotkey.section" = "Undo Hotkey";
+"hotkey.section" = "Shortcuts";
 "hotkey.selection.label" = "Convert selected text:";
 "hotkey.selection.hint" = "Select text anywhere, then press this shortcut to re-read it in the other layout.";
+"mode.section" = "Correction Mode";
+"pair.automatic" = "Automatic (last used)";
 "mode.label" = "Correction mode:";
 "mode.automatic" = "Automatic";
 "mode.hotkeyOnly" = "Only on shortcut";
@@ -62,10 +68,6 @@
 "detection.section" = "Detection Sensitivity";
 "detection.sensitivity" = "Sensitivity";
 "detection.sensitivityHint" = "Higher sensitivity = more aggressive switching. Lower = fewer false positives.";
-"detection.timingSection" = "Correction Timing";
-"detection.delay" = "Correction delay:";
-"detection.delayValue" = "%d ms";
-"detection.delayHint" = "Delay between deleting wrong text and retyping. Increase if corrections appear garbled.";
 "detection.lengthSection" = "Word Length";
 "detection.minLength" = "Minimum word length: %d";
 "detection.minLengthHint" = "Words shorter than this won't trigger auto-switching.";
@@ -87,10 +89,10 @@
 "perApp.removeHelp" = "Remove %@ from the list";
 
 /* Dictionary tab */
-"dictionary.english" = "English Words";
-"dictionary.ukrainian" = "Ukrainian Words";
-"dictionary.russian" = "Russian Words";
-"dictionary.newWord" = "New word...";
+"dictionary.importSection" = "Import";
+"dictionary.importLanguage" = "Language:";
+"dictionary.importHint" = "A UTF-8 text file, one word per line. Words are merged into that language's dictionary and stay after relaunch.";
+"dictionary.noFiles" = "No files imported.";
 "dictionary.import" = "Import Dictionary File...";
 "dictionary.importedFiles" = "Imported Dictionary Files";
 "dictionary.importedCount" = "Imported %1$d words from %2$@";

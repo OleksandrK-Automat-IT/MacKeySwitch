@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.onSelfInitiatedLayoutSwitch = { [weak self] in self?.updateLayoutIcon() }
         setupGlobalUndoHotkey()
         observeEnabledSetting()
+        observePairSetting()
         observeInterfaceLanguage()
         requestNotificationAuthorization()
         // Observers before the monitor: the monitor seeds its caches at start, and a layout
@@ -202,6 +203,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.enableMenuItem?.state = enabled ? .on : .off
                 self.updateLayoutIcon()
             }
+            .store(in: &cancellables)
+    }
+
+    /// The pin lives in the layout code as a plain static, so it is set from here rather
+    /// than read through the settings object on every word.
+    private func observePairSetting() {
+        settings.$cyrillicPair
+            .receive(on: DispatchQueue.main)
+            .sink { pair in InputSourceManager.pinnedCyrillic = pair.language }
             .store(in: &cancellables)
     }
 
@@ -590,6 +600,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         currentLayout.isEnabled = false
         menu.addItem(currentLayout)
 
+        // The pair as a submenu, mirroring the picker in Settings → General.
+        let pairItem = NSMenuItem(title: L("menu.pair"), action: nil, keyEquivalent: "")
+        pairItem.tag = 103
+        let pairMenu = NSMenu()
+        for pair in SettingsModel.CyrillicPair.allCases {
+            let item = NSMenuItem(title: pair.label, action: #selector(selectPair(_:)), keyEquivalent: "")
+            item.tag = pair.rawValue
+            item.target = self
+            pairMenu.addItem(item)
+        }
+        pairItem.submenu = pairMenu
+        syncPairMenu(pairMenu)
+        menu.addItem(pairItem)
+
         let statsItem = NSMenuItem(
             title: L("menu.corrections", settings.sessionCorrections),
             action: nil,
@@ -626,6 +650,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func undoSwitch() {
         monitor.undoLastCorrection()
+    }
+
+    @objc private func selectPair(_ sender: NSMenuItem) {
+        guard let pair = SettingsModel.CyrillicPair(rawValue: sender.tag) else { return }
+        settings.cyrillicPair = pair
+    }
+
+    private func syncPairMenu(_ pairMenu: NSMenu) {
+        for item in pairMenu.items {
+            item.state = item.tag == settings.cyrillicPair.rawValue ? .on : .off
+        }
     }
 
     /// Mirror the shortcut the Carbon hotkey is actually registered with. The menu item
@@ -693,6 +728,9 @@ extension AppDelegate: NSMenuDelegate {
         }
         if let undoItem = menu.item(withTag: 102) {
             syncUndoMenuItem(undoItem)
+        }
+        if let pairMenu = menu.item(withTag: 103)?.submenu {
+            syncPairMenu(pairMenu)
         }
     }
 }

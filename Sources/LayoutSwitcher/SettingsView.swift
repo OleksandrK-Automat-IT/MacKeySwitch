@@ -62,6 +62,9 @@ struct SettingsView: View {
                 StatisticsTab(settings: settings)
                     .settingsTabVisibility(selectedTab == .statistics)
 
+                HotkeysTab(settings: settings)
+                    .settingsTabVisibility(selectedTab == .hotkeys)
+
                 AboutTab()
                     .settingsTabVisibility(selectedTab == .about)
             }
@@ -87,6 +90,7 @@ enum SettingsTab: Int, CaseIterable, Identifiable {
     case perApp
     case dictionary
     case statistics
+    case hotkeys
     case about
 
     var id: Int { rawValue }
@@ -98,6 +102,7 @@ enum SettingsTab: Int, CaseIterable, Identifiable {
         case .perApp: return L("tab.perApp")
         case .dictionary: return L("tab.dictionary")
         case .statistics: return L("tab.statistics")
+        case .hotkeys: return L("tab.hotkeys")
         case .about: return L("tab.about")
         }
     }
@@ -208,6 +213,15 @@ struct GeneralTab: View {
                 Text(L("general.languageHint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                Picker(L("general.pair"), selection: $settings.cyrillicPair) {
+                    ForEach(SettingsModel.CyrillicPair.allCases) { pair in
+                        Text(pair.label).tag(pair)
+                    }
+                }
+                Text(L("general.pairHint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } header: {
                 Text(L("general.section"))
             }
@@ -221,31 +235,8 @@ struct GeneralTab: View {
                 Text(L("mode.hint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
-
-                HotkeyRecorderRow(labelKey: "hotkey.correctWord.label",
-                                  hotkey: $settings.correctWordHotkey)
-                Text(L("hotkey.correctWord.hint"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                HotkeyRecorderRow(labelKey: "hotkey.label", hotkey: $settings.undoHotkey)
-                HotkeyRecorderRow(labelKey: "hotkey.selection.label",
-                                  hotkey: $settings.selectionHotkey)
-                ForEach(SettingsModel.HotkeyKind.allCases, id: \.self) { kind in
-                    if let failure = settings.hotkeyRegistrationFailures[kind] {
-                        Text(failure)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
-                }
-                Text(L("hotkey.selection.hint"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                Text(L("hotkey.hint"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
             } header: {
-                Text(L("hotkey.section"))
+                Text(L("mode.section"))
             }
 
             Section {
@@ -272,6 +263,45 @@ struct GeneralTab: View {
     }
 
 
+}
+
+// MARK: - Hotkeys Tab
+
+struct HotkeysTab: View {
+    @ObservedObject var settings: SettingsModel
+    @ObservedObject private var l10n = Localization.shared
+
+    var body: some View {
+        Form {
+            Section {
+                HotkeyRecorderRow(labelKey: "hotkey.correctWord.label",
+                                  hotkey: $settings.correctWordHotkey)
+                Text(L("hotkey.correctWord.hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HotkeyRecorderRow(labelKey: "hotkey.label", hotkey: $settings.undoHotkey)
+                HotkeyRecorderRow(labelKey: "hotkey.selection.label",
+                                  hotkey: $settings.selectionHotkey)
+                ForEach(SettingsModel.HotkeyKind.allCases, id: \.self) { kind in
+                    if let failure = settings.hotkeyRegistrationFailures[kind] {
+                        Text(failure)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+                Text(L("hotkey.selection.hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Text(L("hotkey.hint"))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } header: {
+                Text(L("hotkey.section"))
+            }
+        }
+        .formStyle(.grouped)
+    }
 }
 
 // MARK: - Hotkey Recorder
@@ -386,32 +416,6 @@ struct DetectionTab: View {
                     .foregroundColor(.secondary)
             } header: {
                 Text(L("detection.section"))
-            }
-
-            Section {
-                HStack {
-                    Text(L("detection.delay"))
-                    Spacer()
-                    Text(L("detection.delayValue", settings.correctionDelayMs))
-                        .monospacedDigit()
-                        .foregroundColor(.secondary)
-                        .frame(width: 70, alignment: .trailing)
-                }
-
-                Slider(
-                    value: Binding(
-                        get: { Double(settings.correctionDelayMs) },
-                        set: { settings.correctionDelayMs = Int($0) }
-                    ),
-                    in: 10...200,
-                    step: 10
-                )
-
-                Text(L("detection.delayHint"))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } header: {
-                Text(L("detection.timingSection"))
             }
 
             Section {
@@ -661,208 +665,94 @@ struct PerAppTab: View {
 
 struct DictionaryTab: View {
     @ObservedObject var settings: SettingsModel
-    @State private var newEnglishWord = ""
-    @State private var newUkrainianWord = ""
+    @ObservedObject private var l10n = Localization.shared
     @State private var importStatusMessage = ""
     @State private var importSucceeded = true
     @State private var importInProgress = false
 
-    /// One importer, told which side asked for it.
+    /// One importer and one button; the language comes from the picker beside it.
     ///
-    /// There used to be two `.fileImporter` modifiers on this same view, one per language.
-    /// SwiftUI keeps only one presentation of a given kind per view, so the second silently
-    /// replaced the first and the English "Import Dictionary File..." button did nothing at
-    /// all — the Ukrainian one worked purely because it happened to be declared last.
+    /// There used to be one "Import" button per language, each with its own
+    /// `.fileImporter`. SwiftUI keeps only one presentation of a given kind per view, so
+    /// all but the last silently did nothing.
     @State private var showingFilePicker = false
     @State private var importLanguage: Language = .english
-    @State private var newRussianWord = ""
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 16) {
-                // English column
-                VStack(alignment: .leading) {
-                    Text(L("dictionary.english"))
-                        .font(.headline)
-
-                    List {
-                        ForEach(settings.customEnglishWords, id: \.self) { word in
-                            Text(word)
-                        }
-                        .onDelete { indexSet in
-                            settings.customEnglishWords.remove(atOffsets: indexSet)
-                            rebuildDictionaries()
-                        }
+        Form {
+            Section {
+                Picker(L("dictionary.importLanguage"), selection: $importLanguage) {
+                    ForEach(Language.allCases, id: \.self) { language in
+                        Text(language.localizedName).tag(language)
                     }
-                    .listStyle(.bordered)
-
-                    HStack {
-                        TextField(L("dictionary.newWord"), text: $newEnglishWord)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { addEnglishWord() }
-
-                        Button("+") { addEnglishWord() }
-                            .disabled(newEnglishWord.isEmpty)
-                    }
-
-                    Button(L("dictionary.import")) {
-                        beginImport(for: .english)
-                    }
-                    .font(.caption)
-                    .disabled(importInProgress)
                 }
 
-                // Ukrainian column
-                VStack(alignment: .leading) {
-                    Text(L("dictionary.ukrainian"))
-                        .font(.headline)
-
-                    List {
-                        ForEach(settings.customUkrainianWords, id: \.self) { word in
-                            Text(word)
-                        }
-                        .onDelete { indexSet in
-                            settings.customUkrainianWords.remove(atOffsets: indexSet)
-                            rebuildDictionaries()
-                        }
+                HStack {
+                    Button(L("dictionary.import")) { showingFilePicker = true }
+                        .disabled(importInProgress)
+                    if !importStatusMessage.isEmpty {
+                        Text(importStatusMessage)
+                            .font(.caption)
+                            .foregroundColor(importSucceeded ? .green : .red)
                     }
-                    .listStyle(.bordered)
-
-                    HStack {
-                        TextField(L("dictionary.newWord"), text: $newUkrainianWord)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { addUkrainianWord() }
-
-                        Button("+") { addUkrainianWord() }
-                            .disabled(newUkrainianWord.isEmpty)
-                    }
-
-                    Button(L("dictionary.import")) {
-                        beginImport(for: .ukrainian)
-                    }
-                    .font(.caption)
-                    .disabled(importInProgress)
                 }
 
-                // Russian column. Nothing is bundled for it, so this and the system
-                // dictionary are all the app has.
-                VStack(alignment: .leading) {
-                    Text(L("dictionary.russian"))
-                        .font(.headline)
-
-                    List {
-                        ForEach(settings.customRussianWords, id: \.self) { word in
-                            Text(word)
-                        }
-                        .onDelete { indexSet in
-                            settings.customRussianWords.remove(atOffsets: indexSet)
-                            rebuildDictionaries()
-                        }
-                    }
-                    .listStyle(.bordered)
-
-                    HStack {
-                        TextField(L("dictionary.newWord"), text: $newRussianWord)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit { addRussianWord() }
-
-                        Button("+") { addRussianWord() }
-                            .disabled(newRussianWord.isEmpty)
-                    }
-
-                    Button(L("dictionary.import")) {
-                        beginImport(for: .russian)
-                    }
+                Text(L("dictionary.importHint"))
                     .font(.caption)
-                    .disabled(importInProgress)
-                }
+                    .foregroundColor(.secondary)
+            } header: {
+                Text(L("dictionary.importSection"))
             }
 
-            // Imported dictionary files
-            if !settings.customEnglishDictionaryPaths.isEmpty
-                || !settings.customUkrainianDictionaryPaths.isEmpty
-                || !settings.customRussianDictionaryPaths.isEmpty {
-                Divider()
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(L("dictionary.importedFiles"))
+            Section {
+                let files: [(Language, String)] =
+                    settings.customEnglishDictionaryPaths.map { (.english, $0) }
+                    + settings.customUkrainianDictionaryPaths.map { (.ukrainian, $0) }
+                    + settings.customRussianDictionaryPaths.map { (.russian, $0) }
+
+                if files.isEmpty {
+                    Text(L("dictionary.noFiles"))
                         .font(.caption)
                         .foregroundColor(.secondary)
-
-                    ForEach(settings.customEnglishDictionaryPaths, id: \.self) { path in
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text("EN: \(URL(fileURLWithPath: path).lastPathComponent)")
-                                .font(.caption)
-                            Spacer()
-                            Button(role: .destructive) {
-                                settings.customEnglishDictionaryPaths.removeAll { $0 == path }
-                                rebuildDictionaries()
-                            } label: {
-                                Image(systemName: "xmark.circle")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
+                }
+                ForEach(files, id: \.1) { language, path in
+                    HStack {
+                        Image(systemName: "doc.text")
+                        Text("\(language.localizedName): \(URL(fileURLWithPath: path).lastPathComponent)")
+                            .font(.caption)
+                        Spacer()
+                        Button(role: .destructive) {
+                            remove(path: path, language: language)
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .foregroundColor(.red)
                         }
-                    }
-                    ForEach(settings.customUkrainianDictionaryPaths, id: \.self) { path in
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text("UA: \(URL(fileURLWithPath: path).lastPathComponent)")
-                                .font(.caption)
-                            Spacer()
-                            Button(role: .destructive) {
-                                settings.customUkrainianDictionaryPaths.removeAll { $0 == path }
-                                rebuildDictionaries()
-                            } label: {
-                                Image(systemName: "xmark.circle")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    ForEach(settings.customRussianDictionaryPaths, id: \.self) { path in
-                        HStack {
-                            Image(systemName: "doc.text")
-                            Text("RU: \(URL(fileURLWithPath: path).lastPathComponent)")
-                                .font(.caption)
-                            Spacer()
-                            Button(role: .destructive) {
-                                settings.customRussianDictionaryPaths.removeAll { $0 == path }
-                                rebuildDictionaries()
-                            } label: {
-                                Image(systemName: "xmark.circle")
-                                    .foregroundColor(.red)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                        .buttonStyle(.plain)
                     }
                 }
-            }
-
-            if !importStatusMessage.isEmpty {
-                Text(importStatusMessage)
-                    .font(.caption)
-                    .foregroundColor(importSucceeded ? .green : .red)
+            } header: {
+                Text(L("dictionary.importedFiles"))
             }
         }
-        .padding()
+        .formStyle(.grouped)
         .fileImporter(
             isPresented: $showingFilePicker,
             allowedContentTypes: [.plainText],
             allowsMultipleSelection: false
         ) { result in
-            // `importLanguage` is still the value set by whichever button opened the panel:
-            // the completion runs before SwiftUI clears `showingFilePicker`, and nothing
-            // else writes it.
             if case .success(let urls) = result, let url = urls.first {
                 importDictionaryFile(url: url, language: importLanguage)
             }
         }
     }
 
-    private func beginImport(for language: Language) {
-        importLanguage = language
-        showingFilePicker = true
+    private func remove(path: String, language: Language) {
+        switch language {
+        case .english: settings.customEnglishDictionaryPaths.removeAll { $0 == path }
+        case .ukrainian: settings.customUkrainianDictionaryPaths.removeAll { $0 == path }
+        case .russian: settings.customRussianDictionaryPaths.removeAll { $0 == path }
+        }
+        rebuildDictionaries()
     }
 
     private func importDictionaryFile(url: URL, language: Language) {
@@ -905,35 +795,11 @@ struct DictionaryTab: View {
         }
     }
 
-    private func addEnglishWord() {
-        let word = newEnglishWord.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !word.isEmpty, !settings.customEnglishWords.contains(word) else { return }
-        settings.customEnglishWords.append(word)
-        // Persisting alone is not enough: the detector consults DictionaryManager,
-        // which reads these arrays only at launch. Push the word in live too.
-        DictionaryManager.shared.addCustomEnglishWords([word])
-        newEnglishWord = ""
-    }
-
-    private func addUkrainianWord() {
-        let word = newUkrainianWord.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !word.isEmpty, !settings.customUkrainianWords.contains(word) else { return }
-        settings.customUkrainianWords.append(word)
-        DictionaryManager.shared.addCustomUkrainianWords([word])
-        newUkrainianWord = ""
-    }
-
-    private func addRussianWord() {
-        let word = newRussianWord.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !word.isEmpty, !settings.customRussianWords.contains(word) else { return }
-        settings.customRussianWords.append(word)
-        DictionaryManager.shared.addCustomRussianWords([word])
-        newRussianWord = ""
-    }
-
-    /// Custom words merge into the same sets as the bundled lists, so removing one means
-    /// rebuilding the sets from scratch. DictionaryManager serializes this with imports and
-    /// additions; otherwise an older background rebuild can erase a newer user change.
+    /// Imported files merge into the same sets as the bundled lists, so removing one means
+    /// rebuilding the sets from scratch. Words added in earlier versions are still honoured
+    /// here even though there is no longer a place in the UI to add more. DictionaryManager
+    /// serializes this with imports; otherwise an older background rebuild can erase a
+    /// newer user change.
     private func rebuildDictionaries() {
         DictionaryManager.shared.rebuildAsync(
             customEnglishWords: settings.customEnglishWords,

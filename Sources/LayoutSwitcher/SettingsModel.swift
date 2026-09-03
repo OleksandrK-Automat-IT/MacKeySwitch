@@ -157,14 +157,6 @@ final class SettingsModel: ObservableObject {
         didSet { defaults.set(sensitivity.rawValue, forKey: "sensitivity") }
     }
 
-    /// Pause between erasing the word and retyping it, in milliseconds. Not needed for
-    /// ordering — synthetic events are delivered in the order posted — but an escape hatch
-    /// for apps that fall behind on rapid input. The slider's floor is 10; the code used to
-    /// clamp to 50 underneath it, so the bottom of the slider silently did nothing.
-    @Published var correctionDelayMs: Int {
-        didSet { defaults.set(correctionDelayMs, forKey: "correctionDelayMs") }
-    }
-
     /// Minimum word length to trigger detection
     @Published var minWordLength: Int {
         didSet { defaults.set(minWordLength, forKey: "minWordLength") }
@@ -279,6 +271,38 @@ final class SettingsModel: ObservableObject {
         }
     }
 
+    /// Which Cyrillic layout English pairs with. `automatic` follows the layout the user
+    /// last worked in; the other two pin it, for someone who types both and wants English
+    /// words to always come back as one of them.
+    enum CyrillicPair: Int, CaseIterable, Identifiable {
+        case automatic = 0
+        case ukrainian = 1
+        case russian = 2
+
+        var id: Int { rawValue }
+
+        /// The layout this pins, or nil for automatic.
+        var language: Language? {
+            switch self {
+            case .automatic: return nil
+            case .ukrainian: return .ukrainian
+            case .russian: return .russian
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .automatic: return L("pair.automatic")
+            case .ukrainian, .russian:
+                return L("status.pair", language!.localizedName, Language.english.localizedName)
+            }
+        }
+    }
+
+    @Published var cyrillicPair: CyrillicPair {
+        didSet { defaults.set(cyrillicPair.rawValue, forKey: "cyrillicPair") }
+    }
+
     @Published var correctionMode: CorrectionMode {
         didSet { defaults.set(correctionMode.rawValue, forKey: "correctionMode") }
     }
@@ -344,7 +368,6 @@ final class SettingsModel: ObservableObject {
         let rawSensitivity = defaults.object(forKey: "sensitivity") as? Int ?? Sensitivity.medium.rawValue
         self.sensitivity = Sensitivity(rawValue: rawSensitivity) ?? .medium
 
-        self.correctionDelayMs = defaults.object(forKey: "correctionDelayMs") as? Int ?? 10
         self.minWordLength = defaults.object(forKey: "minWordLength") as? Int ?? 2
 
         self.customEnglishWords = defaults.object(forKey: "customEnglishWords") as? [String] ?? []
@@ -380,6 +403,9 @@ final class SettingsModel: ObservableObject {
 
         self.correctionMode = CorrectionMode(
             rawValue: defaults.object(forKey: "correctionMode") as? Int ?? 0
+        ) ?? .automatic
+        self.cyrillicPair = CyrillicPair(
+            rawValue: defaults.object(forKey: "cyrillicPair") as? Int ?? 0
         ) ?? .automatic
 
         let storedWordMods = defaults.object(forKey: "correctWordHotkeyModifiers") as? Int

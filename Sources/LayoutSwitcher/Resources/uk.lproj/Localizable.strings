@@ -8,6 +8,7 @@
 "menu.currentLayout" = "Поточна: %@";
 "menu.corrections" = "Виправлень: %d";
 "menu.correctionsWithTotal" = "Виправлень: %1$d (усього: %2$d)";
+"menu.pair" = "Пара перемикання";
 "menu.settings" = "Налаштування…";
 "window.settings" = "Налаштування MacKeySwitch";
 "menu.quit" = "Вийти з MacKeySwitch";
@@ -24,6 +25,7 @@
 "tab.detection" = "Розпізнавання";
 "tab.perApp" = "Програми";
 "tab.dictionary" = "Словник";
+"tab.hotkeys" = "Клавіші";
 "tab.statistics" = "Статистика";
 "tab.about" = "Про програму";
 
@@ -33,12 +35,16 @@
 "general.startAtLogin" = "Запускати при вході в систему";
 "general.showNotifications" = "Показувати сповіщення про заміну";
 "general.language" = "Мова інтерфейсу";
+"general.pair" = "Пара перемикання:";
+"general.pairHint" = "У яку кирилицю виправляти слова, набрані в англійській. «Автоматично» — та, якою ви користувались останньою. З кирилиці завжди назад в англійську.";
 "general.languageHint" = "Застосовується одразу. «Системна» — за порядком мов у Системних налаштуваннях.";
 
 /* Гаряча клавіша скасування */
-"hotkey.section" = "Гаряча клавіша скасування";
+"hotkey.section" = "Гарячі клавіші";
 "hotkey.selection.label" = "Перетворити виділений текст:";
 "hotkey.selection.hint" = "Виділіть текст будь-де й натисніть це поєднання, щоб прочитати його в іншій розкладці.";
+"mode.section" = "Режим виправлення";
+"pair.automatic" = "Автоматично (остання використана)";
 "mode.label" = "Режим виправлення:";
 "mode.automatic" = "Автоматичний";
 "mode.hotkeyOnly" = "Лише за поєднанням";
@@ -62,10 +68,6 @@
 "detection.section" = "Чутливість розпізнавання";
 "detection.sensitivity" = "Чутливість";
 "detection.sensitivityHint" = "Вища чутливість — активніше перемикання. Нижча — менше хибних спрацювань.";
-"detection.timingSection" = "Час виправлення";
-"detection.delay" = "Затримка виправлення:";
-"detection.delayValue" = "%d мс";
-"detection.delayHint" = "Пауза між стиранням хибного тексту й повторним набором. Збільште, якщо виправлення виходять спотвореними.";
 "detection.lengthSection" = "Довжина слова";
 "detection.minLength" = "Мінімальна довжина слова: %d";
 "detection.minLengthHint" = "Коротші слова не викликатимуть автоперемикання.";
@@ -87,10 +89,10 @@
 "perApp.removeHelp" = "Видалити «%@» зі списку";
 
 /* Вкладка «Словник» */
-"dictionary.english" = "Англійські слова";
-"dictionary.ukrainian" = "Українські слова";
-"dictionary.russian" = "Російські слова";
-"dictionary.newWord" = "Нове слово…";
+"dictionary.importSection" = "Імпорт";
+"dictionary.importLanguage" = "Мова:";
+"dictionary.importHint" = "Текстовий файл UTF-8, одне слово в рядку. Слова додаються до словника цієї мови і зберігаються після перезапуску.";
+"dictionary.noFiles" = "Файли не імпортовано.";
 "dictionary.import" = "Імпортувати файл словника…";
 "dictionary.importedFiles" = "Імпортовані файли словників";
 "dictionary.importedCount" = "Імпортовано %1$d слів із %2$@";

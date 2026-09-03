@@ -46,14 +46,18 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
 - Exact geometry support for Apple `Ukrainian`, `Ukrainian-PC`, `Russian` and `RussianWin`
 - Russian has no bundled list and no impossible-bigram list (the corpus is the arbiter of
   those, and there is no Russian corpus to arbitrate): the system dictionary plus the
-  user's own words and imported files from the Dictionary tab are all it has
+  imported files from the Dictionary tab are all it has (custom words added in earlier
+  versions are still loaded, but the UI to add more was removed)
 - Settings → Status shows the pair *in force* — English with the last-used Cyrillic
   layout — not a fixed "Ukrainian ↔ English"
 
 ### Layout pairing — read before touching `Language`
 Switching happens in **pairs**: English ↔ Ukrainian, English ↔ Russian. A Cyrillic word
 always goes back to English; an English-typed word goes to the Cyrillic layout the user
-**last worked in** (`InputSourceManager.preferredCyrillicLanguage()`, fed by every
+**last worked in**, unless a pair is pinned in Settings → General or the menu-bar
+submenu (`SettingsModel.cyrillicPair` → `InputSourceManager.pinnedCyrillic`; a pin naming
+a layout that is not enabled is ignored). The automatic rule is
+`InputSourceManager.preferredCyrillicLanguage()`, fed by every
 `currentLanguage()` read and by `switchTo`, **persisted in UserDefaults** as
 `lastUsedCyrillicLanguage` because relaunches are far more frequent than language
 changes). Never Cyrillic to Cyrillic — the two share too many keys to tell apart, and it
@@ -280,6 +284,8 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 2. **Corrections only on space**: Return/Tab too late; keystrokes already sent / focus already moved
 3. **Async detection**: Correction applies after keystroke already displayed; rare out-of-order scenarios possible
 4. **Bundled dicts + macOS dicts**: Coverage is good but not perfect (DictionaryCoverageTests documents misses)
+   — the erase-to-retype gap is a fixed 10 ms (`KeyboardMonitor.eraseToRetypeGapMs`); it
+   was a 10–200 ms slider that nobody ever needed above its floor
 5. **No Cmd+Z undo inside app**: Revert is via the shortcut (⌃⇧Z), not native undo (each
    correction is async). Binding it to a bare ⌃Z works, but Carbon then takes that
    combination system-wide, and apps where it is the native undo lose it
