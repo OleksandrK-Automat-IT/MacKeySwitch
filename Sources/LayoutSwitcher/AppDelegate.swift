@@ -5,6 +5,25 @@ import SwiftUI
 import UserNotifications
 import ObjCExceptionGuard
 
+/// A window Escape closes.
+///
+/// Escape reaches a window as `cancelOperation(_:)`, but only after the responder chain
+/// has had it: a text field being edited answers first and ends its own editing, so
+/// Escape backs out of a half-typed exception word before it closes anything.
+///
+/// `onCancel` exists to make that testable without a running app; it defaults to closing.
+final class EscapeClosableWindow: NSWindow {
+    var onCancel: (() -> Void)?
+
+    override func cancelOperation(_ sender: Any?) {
+        if let onCancel = onCancel {
+            onCancel()
+        } else {
+            close()
+        }
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let monitor = KeyboardMonitor()
@@ -690,7 +709,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settingsView = SettingsView(settings: settings)
         let hostingController = NSHostingController(rootView: settingsView)
 
-        let window = NSWindow(contentViewController: hostingController)
+        let window = EscapeClosableWindow(contentViewController: hostingController)
         window.title = L("window.settings")
         // Resizable on purpose. The window is sized for the longest translation the app
         // ships with, but that width comes from measuring strings rather than from AppKit's
