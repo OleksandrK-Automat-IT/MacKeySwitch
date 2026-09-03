@@ -117,8 +117,10 @@ final class KeyboardMonitor {
             DictionaryManager.shared.rebuildAsync(
                 customEnglishWords: settings.customEnglishWords,
                 customUkrainianWords: settings.customUkrainianWords,
+                customRussianWords: settings.customRussianWords,
                 englishPaths: settings.customEnglishDictionaryPaths,
-                ukrainianPaths: settings.customUkrainianDictionaryPaths
+                ukrainianPaths: settings.customUkrainianDictionaryPaths,
+                russianPaths: settings.customRussianDictionaryPaths
             )
         }
 

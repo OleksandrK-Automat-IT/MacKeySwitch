@@ -193,6 +193,10 @@ final class SettingsModel: ObservableObject {
         didSet { defaults.set(customUkrainianWords, forKey: "customUkrainianWords") }
     }
 
+    @Published var customRussianWords: [String] {
+        didSet { defaults.set(customRussianWords, forKey: "customRussianWords") }
+    }
+
     // MARK: - Custom Dictionary Files
 
     @Published var customEnglishDictionaryPaths: [String] {
@@ -204,6 +208,12 @@ final class SettingsModel: ObservableObject {
     @Published var customUkrainianDictionaryPaths: [String] {
         didSet {
             defaults.set(customUkrainianDictionaryPaths, forKey: "customUkrainianDictionaryPaths")
+        }
+    }
+
+    @Published var customRussianDictionaryPaths: [String] {
+        didSet {
+            defaults.set(customRussianDictionaryPaths, forKey: "customRussianDictionaryPaths")
         }
     }
 
@@ -339,6 +349,7 @@ final class SettingsModel: ObservableObject {
 
         self.customEnglishWords = defaults.object(forKey: "customEnglishWords") as? [String] ?? []
         self.customUkrainianWords = defaults.object(forKey: "customUkrainianWords") as? [String] ?? []
+        self.customRussianWords = defaults.object(forKey: "customRussianWords") as? [String] ?? []
 
         let storedExceptions = defaults.object(forKey: "exceptionWords") as? [String] ?? []
         self.exceptionWords = storedExceptions
@@ -347,6 +358,7 @@ final class SettingsModel: ObservableObject {
 
         self.customEnglishDictionaryPaths = defaults.object(forKey: "customEnglishDictionaryPaths") as? [String] ?? []
         self.customUkrainianDictionaryPaths = defaults.object(forKey: "customUkrainianDictionaryPaths") as? [String] ?? []
+        self.customRussianDictionaryPaths = defaults.object(forKey: "customRussianDictionaryPaths") as? [String] ?? []
 
         self.totalCorrections = defaults.object(forKey: "totalCorrections") as? Int ?? 0
 

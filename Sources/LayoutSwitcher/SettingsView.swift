@@ -181,6 +181,12 @@ struct GeneralTab: View {
     @ObservedObject var settings: SettingsModel
     @ObservedObject private var l10n = Localization.shared
 
+    /// "Ukrainian ↔ English" or "Russian ↔ English", whichever pair is in force.
+    static var activePairDescription: String {
+        let cyrillic = InputSourceManager.preferredCyrillicLanguage() ?? .ukrainian
+        return L("status.pair", cyrillic.localizedName, Language.english.localizedName)
+    }
+
     var body: some View {
         Form {
             Section {
@@ -253,7 +259,9 @@ struct GeneralTab: View {
                 HStack {
                     Text(L("status.supportedPair"))
                     Spacer()
-                    Text(L("status.pair"))
+                    // The pair in force right now: English with whichever Cyrillic layout
+                    // was used last. The other Cyrillic layout takes over when it is.
+                    Text(Self.activePairDescription)
                         .foregroundColor(.secondary)
                 }
             } header: {
@@ -667,6 +675,7 @@ struct DictionaryTab: View {
     /// all — the Ukrainian one worked purely because it happened to be declared last.
     @State private var showingFilePicker = false
     @State private var importLanguage: Language = .english
+    @State private var newRussianWord = ""
 
     var body: some View {
         VStack(spacing: 12) {
@@ -734,10 +743,45 @@ struct DictionaryTab: View {
                     .font(.caption)
                     .disabled(importInProgress)
                 }
+
+                // Russian column. Nothing is bundled for it, so this and the system
+                // dictionary are all the app has.
+                VStack(alignment: .leading) {
+                    Text(L("dictionary.russian"))
+                        .font(.headline)
+
+                    List {
+                        ForEach(settings.customRussianWords, id: \.self) { word in
+                            Text(word)
+                        }
+                        .onDelete { indexSet in
+                            settings.customRussianWords.remove(atOffsets: indexSet)
+                            rebuildDictionaries()
+                        }
+                    }
+                    .listStyle(.bordered)
+
+                    HStack {
+                        TextField(L("dictionary.newWord"), text: $newRussianWord)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { addRussianWord() }
+
+                        Button("+") { addRussianWord() }
+                            .disabled(newRussianWord.isEmpty)
+                    }
+
+                    Button(L("dictionary.import")) {
+                        beginImport(for: .russian)
+                    }
+                    .font(.caption)
+                    .disabled(importInProgress)
+                }
             }
 
             // Imported dictionary files
-            if !settings.customEnglishDictionaryPaths.isEmpty || !settings.customUkrainianDictionaryPaths.isEmpty {
+            if !settings.customEnglishDictionaryPaths.isEmpty
+                || !settings.customUkrainianDictionaryPaths.isEmpty
+                || !settings.customRussianDictionaryPaths.isEmpty {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
                     Text(L("dictionary.importedFiles"))
@@ -768,6 +812,22 @@ struct DictionaryTab: View {
                             Spacer()
                             Button(role: .destructive) {
                                 settings.customUkrainianDictionaryPaths.removeAll { $0 == path }
+                                rebuildDictionaries()
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                                    .foregroundColor(.red)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    ForEach(settings.customRussianDictionaryPaths, id: \.self) { path in
+                        HStack {
+                            Image(systemName: "doc.text")
+                            Text("RU: \(URL(fileURLWithPath: path).lastPathComponent)")
+                                .font(.caption)
+                            Spacer()
+                            Button(role: .destructive) {
+                                settings.customRussianDictionaryPaths.removeAll { $0 == path }
                                 rebuildDictionaries()
                             } label: {
                                 Image(systemName: "xmark.circle")
@@ -833,8 +893,9 @@ struct DictionaryTab: View {
                     settings.customUkrainianDictionaryPaths.append(url.path)
                 }
             case .russian:
-                // Russian relies on the system dictionary; there is no import for it yet.
-                break
+                if !settings.customRussianDictionaryPaths.contains(url.path) {
+                    settings.customRussianDictionaryPaths.append(url.path)
+                }
             }
 
             importStatusMessage = L("dictionary.importedCount", count, url.lastPathComponent)
@@ -862,19 +923,25 @@ struct DictionaryTab: View {
         newUkrainianWord = ""
     }
 
+    private func addRussianWord() {
+        let word = newRussianWord.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !word.isEmpty, !settings.customRussianWords.contains(word) else { return }
+        settings.customRussianWords.append(word)
+        DictionaryManager.shared.addCustomRussianWords([word])
+        newRussianWord = ""
+    }
+
     /// Custom words merge into the same sets as the bundled lists, so removing one means
     /// rebuilding the sets from scratch. DictionaryManager serializes this with imports and
     /// additions; otherwise an older background rebuild can erase a newer user change.
     private func rebuildDictionaries() {
-        let enWords = settings.customEnglishWords
-        let uaWords = settings.customUkrainianWords
-        let enPaths = settings.customEnglishDictionaryPaths
-        let uaPaths = settings.customUkrainianDictionaryPaths
         DictionaryManager.shared.rebuildAsync(
-            customEnglishWords: enWords,
-            customUkrainianWords: uaWords,
-            englishPaths: enPaths,
-            ukrainianPaths: uaPaths
+            customEnglishWords: settings.customEnglishWords,
+            customUkrainianWords: settings.customUkrainianWords,
+            customRussianWords: settings.customRussianWords,
+            englishPaths: settings.customEnglishDictionaryPaths,
+            ukrainianPaths: settings.customUkrainianDictionaryPaths,
+            russianPaths: settings.customRussianDictionaryPaths
         )
     }
 }

@@ -44,8 +44,11 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
 - Confidence-weighted detection (6 signals, 50k-word bundled dictionaries + macOS spelling dicts)
 - Two correction modes: automatic (on space) or only when asked via shortcut
 - Exact geometry support for Apple `Ukrainian`, `Ukrainian-PC`, `Russian` and `RussianWin`
-- Russian rides on the system dictionary alone: no bundled list, no impossible-bigram list
-  (the corpus is the arbiter of those, and there is no Russian corpus to arbitrate)
+- Russian has no bundled list and no impossible-bigram list (the corpus is the arbiter of
+  those, and there is no Russian corpus to arbitrate): the system dictionary plus the
+  user's own words and imported files from the Dictionary tab are all it has
+- Settings → Status shows the pair *in force* — English with the last-used Cyrillic
+  layout — not a fixed "Ukrainian ↔ English"
 
 ### Layout pairing — read before touching `Language`
 Switching happens in **pairs**: English ↔ Ukrainian, English ↔ Russian. A Cyrillic word
@@ -291,7 +294,7 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (256 tests, 31 suites)
+- [ ] Unit tests in `run-tests.sh` all pass (258 tests, 32 suites)
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Dictionary coverage tests document any gaps
 - [ ] Password heuristic tests cover edge cases

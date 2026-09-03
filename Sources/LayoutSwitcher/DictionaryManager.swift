@@ -97,15 +97,19 @@ final class DictionaryManager: WordSource {
     func rebuildAsync(
         customEnglishWords: [String],
         customUkrainianWords: [String],
+        customRussianWords: [String] = [],
         englishPaths: [String],
-        ukrainianPaths: [String]
+        ukrainianPaths: [String],
+        russianPaths: [String] = []
     ) {
         mutationQueue.async { [weak self] in
             self?.rebuildNow(
                 customEnglishWords: customEnglishWords,
                 customUkrainianWords: customUkrainianWords,
+                customRussianWords: customRussianWords,
                 englishPaths: englishPaths,
-                ukrainianPaths: ukrainianPaths
+                ukrainianPaths: ukrainianPaths,
+                russianPaths: russianPaths
             )
         }
     }
@@ -113,8 +117,10 @@ final class DictionaryManager: WordSource {
     private func rebuildNow(
         customEnglishWords: [String],
         customUkrainianWords: [String],
+        customRussianWords: [String],
         englishPaths: [String],
-        ukrainianPaths: [String]
+        ukrainianPaths: [String],
+        russianPaths: [String]
     ) {
         // Everything is parsed and indexed into locals first. The lock is taken only for
         // the swap, so readers see either the complete old dictionary or the complete new
@@ -123,22 +129,30 @@ final class DictionaryManager: WordSource {
         // files took to read, which for a 370k-word file is a quarter of a second.
         var en = Self.readBundled("en_words").map(Self.parseWordList) ?? []
         var ua = Self.readBundled("ua_words").map(Self.parseWordList) ?? []
+        // No bundled Russian list: whatever the user adds or imports is all there is here,
+        // and the system dictionary carries the rest.
+        var ru: [String] = []
         en += customEnglishWords.map { $0.lowercased() }
         ua += customUkrainianWords.map { $0.lowercased() }
+        ru += customRussianWords.map { $0.lowercased() }
         for path in englishPaths { en += Self.readFile(path).map(Self.parseWordList) ?? [] }
         for path in ukrainianPaths { ua += Self.readFile(path).map(Self.parseWordList) ?? [] }
+        for path in russianPaths { ru += Self.readFile(path).map(Self.parseWordList) ?? [] }
 
         let enIndex = Self.index(en)
         let uaIndex = Self.index(ua)
+        let ruIndex = Self.index(ru)
 
         lock.lock()
         englishWords = enIndex.words
         englishPrefixes = enIndex.prefixes
         ukrainianWords = uaIndex.words
         ukrainianPrefixes = uaIndex.prefixes
+        russianWords = ruIndex.words
+        russianPrefixes = ruIndex.prefixes
         lock.unlock()
 
-        print("[LayoutSwitcher] Dictionaries rebuilt: EN=\(enIndex.words.count), UA=\(uaIndex.words.count)")
+        print("[LayoutSwitcher] Dictionaries rebuilt: EN=\(enIndex.words.count), UA=\(uaIndex.words.count), RU=\(ruIndex.words.count)")
     }
 
     private static func readBundled(_ name: String) -> String? {
@@ -354,18 +368,22 @@ final class DictionaryManager: WordSource {
     }
 
     /// Reload all custom dictionary files from saved paths
-    func reloadCustomDictionaryFiles(englishPaths: [String], ukrainianPaths: [String]) {
+    func reloadCustomDictionaryFiles(
+        englishPaths: [String], ukrainianPaths: [String], russianPaths: [String] = []
+    ) {
         mutationQueue.sync {
             reloadCustomDictionaryFilesNow(
                 englishPaths: englishPaths,
-                ukrainianPaths: ukrainianPaths
+                ukrainianPaths: ukrainianPaths,
+                russianPaths: russianPaths
             )
         }
     }
 
     private func reloadCustomDictionaryFilesNow(
         englishPaths: [String],
-        ukrainianPaths: [String]
+        ukrainianPaths: [String],
+        russianPaths: [String]
     ) {
         for path in englishPaths {
             let url = URL(fileURLWithPath: path)
@@ -374,6 +392,10 @@ final class DictionaryManager: WordSource {
         for path in ukrainianPaths {
             let url = URL(fileURLWithPath: path)
             _ = loadDictionaryFileNow(url: url, language: .ukrainian)
+        }
+        for path in russianPaths {
+            let url = URL(fileURLWithPath: path)
+            _ = loadDictionaryFileNow(url: url, language: .russian)
         }
     }
 
@@ -408,6 +430,23 @@ final class DictionaryManager: WordSource {
             ukrainianWords.insert(lower)
             if lower.count >= 3 {
                 ukrainianPrefixes.insert(String(lower.prefix(3)))
+            }
+        }
+    }
+
+    func addCustomRussianWords(_ words: [String]) {
+        mutationQueue.sync {
+            addCustomRussianWordsNow(words)
+        }
+    }
+
+    private func addCustomRussianWordsNow(_ words: [String]) {
+        lock.lock(); defer { lock.unlock() }
+        for word in words {
+            let lower = word.lowercased()
+            russianWords.insert(lower)
+            if lower.count >= 3 {
+                russianPrefixes.insert(String(lower.prefix(3)))
             }
         }
     }

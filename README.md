@@ -79,7 +79,7 @@ The icon is the flag of the current layout. The menu has:
 | General | Interface language, correction mode, the three shortcuts, launch at login |
 | Detection | Sensitivity, minimum word length, correction delay |
 | Per-App Rules | Which apps are excluded |
-| Dictionary | Custom words and extra word-list files |
+| Dictionary | Custom words and extra word-list files, per language (English, Ukrainian, Russian) |
 | Statistics | Corrections made |
 | About | Version and licence |
 
@@ -112,7 +112,8 @@ Settings has a recorder for all three, which is easier.
 A correction requires the other-layout reading to be a real word, at every sensitivity.
 Without that there is nothing to separate a wrong-layout word from a name, a brand or an
 inflection the dictionaries do not list. Word lookup goes to the bundled 50k lists first,
-then to the macOS spelling dictionaries.
+then to the macOS spelling dictionaries. Russian has no bundled list: it relies on the
+macOS dictionary plus whatever you add or import in the Dictionary tab.
 
 Missing a correction is a nuisance; rewriting correct input destroys it. Where the evidence
 cannot tell the two apart, the text is left alone.
