@@ -49,6 +49,7 @@
 "hotkey.hint" = "Press a key combination with at least one modifier (⌃ ⌥ ⇧ ⌘).";
 "hotkey.disable" = "Disable hotkey";
 "hotkey.disabled" = "Disabled";
+"hotkey.registrationFailed" = "%1$@ %2$@ could not be registered because the shortcut is already in use.";
 
 /* Status */
 "status.section" = "Status";
@@ -91,6 +92,8 @@
 "dictionary.import" = "Import Dictionary File...";
 "dictionary.importedFiles" = "Imported Dictionary Files";
 "dictionary.importedCount" = "Imported %1$d words from %2$@";
+"dictionary.importing" = "Importing %@…";
+"dictionary.importFailed" = "No usable words found in %@. Use UTF-8 text with one word per line.";
 
 /* Statistics tab */
 "stats.section" = "Correction Statistics";

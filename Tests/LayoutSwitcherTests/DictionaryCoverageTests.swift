@@ -57,6 +57,8 @@ import Foundation
         // the SystemSpellChecker dependency exists.
         #expect(!DictionaryManager.shared.isUkrainianWord("привіт"))
         #expect(!DictionaryManager.shared.isUkrainianWord("дякую"))
+        #expect(DictionaryManager.shared.isEnglishWord("hello"),
+                "the test process did not load the bundled dictionaries")
         // ...but the app as a whole does know them.
         #expect(DictionaryManager.shared.isWord("привіт", language: .ukrainian))
         #expect(DictionaryManager.shared.isWord("дякую", language: .ukrainian))

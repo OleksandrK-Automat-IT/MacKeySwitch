@@ -15,10 +15,19 @@ enum InputEvent: Equatable {
 protocol CorrectionEnvironment {
     /// The layout the system reports, or nil for one the app does not handle.
     func currentLayout() -> Language?
+    /// Exact input-source identity, needed when two layouts for one language use different
+    /// physical key geometry.
+    func currentSourceID() -> String?
+    func preferredSourceID(for language: Language) -> String?
     func deadKeyProfile() -> InputSourceManager.DeadKeyProfile
     var isSystemSecureInputEnabled: Bool { get }
     func secureFieldState() -> SecureFieldState
     var now: Date { get }
+}
+
+extension CorrectionEnvironment {
+    func currentSourceID() -> String? { nil }
+    func preferredSourceID(for language: Language) -> String? { nil }
 }
 
 /// The settings the engine consults. `SettingsModel` conforms; tests use a plain struct.
@@ -29,6 +38,12 @@ protocol CorrectionSettings {
     var correctionMode: SettingsModel.CorrectionMode { get }
     func isAppExcluded(bundleID: String) -> Bool
     func isException(_ word: String) -> Bool
+    /// The event tap sees a shortcut before Carbon invokes it. Only the app's own actions
+    /// may keep the text snapshot alive across that chord; arbitrary editing shortcuts can
+    /// move the caret or mutate the document.
+    func isMacKeySwitchHotkey(
+        keycode: UInt16, shift: Bool, command: Bool, control: Bool, option: Bool
+    ) -> Bool
 }
 
 extension SettingsModel: CorrectionSettings {
@@ -100,6 +115,7 @@ final class CorrectionEngine {
     private struct CompletedWord {
         let keystrokes: [Keystroke]
         let layout: Language
+        let sourceID: String?
         /// Whether the boundary space actually printed — a dead key may have eaten it.
         let boundaryReachedScreen: Bool
         let finishedAt: Date
@@ -122,6 +138,7 @@ final class CorrectionEngine {
     static let maxBufferLength = 64
 
     private var wordStartLayout: Language?
+    private var wordStartSourceID: String?
 
     /// The undo snapshot: what the last correction replaced, and what it wrote.
     private struct AppliedCorrection {
@@ -142,6 +159,7 @@ final class CorrectionEngine {
     /// Layout and frontmost app, cached rather than queried per keystroke: both are
     /// cross-process calls, and this runs inside an event tap callback.
     private(set) var cachedLayout: Language?
+    private var cachedSourceID: String?
     private var cachedDeadKeys = InputSourceManager.DeadKeyProfile()
     private(set) var frontmostBundleID: String?
 
@@ -149,10 +167,15 @@ final class CorrectionEngine {
     /// boundary space will resolve it into one character and be consumed doing so.
     private var bufferEndsWithDeadKey = false
 
+    /// A digit or structural symbol occurred in this screen word. Letters after it may be
+    /// a suffix of an identifier/password, but never a standalone word safe to rewrite.
+    private var suppressCorrectionUntilBoundary = false
+
     // MARK: Cache updates
 
     func seedCaches(frontmostBundleID: String?) {
         cachedLayout = environment.currentLayout()
+        cachedSourceID = environment.currentSourceID()
         cachedDeadKeys = environment.deadKeyProfile()
         self.frontmostBundleID = frontmostBundleID
     }
@@ -161,6 +184,7 @@ final class CorrectionEngine {
     /// from the user rather than from this app, suppresses the next word's correction.
     func layoutDidChange(isCorrecting: Bool) {
         cachedLayout = environment.currentLayout()
+        cachedSourceID = environment.currentSourceID()
         cachedDeadKeys = environment.deadKeyProfile()
 
         let selfSwitchedRecently = lastSelfSwitchTime.map {
@@ -202,13 +226,14 @@ final class CorrectionEngine {
 
         case let .keyDown(keycode, shift, capsLock, command, control, option):
             return handleKeyDown(keycode: keycode, shift: shift, capsLock: capsLock,
-                                 chord: command || control || option,
+                                 command: command, control: control, option: option,
                                  isCorrecting: isCorrecting)
         }
     }
 
     private func handleKeyDown(keycode: UInt16, shift: Bool, capsLock: Bool,
-                               chord: Bool, isCorrecting: Bool) -> EngineOutcome {
+                               command: Bool, control: Bool, option: Bool,
+                               isCorrecting: Bool) -> EngineOutcome {
         guard settings.isEnabled else { return .nothing }
 
         // Never buffer anything typed into a password field. The system-wide flag is a
@@ -218,7 +243,7 @@ final class CorrectionEngine {
             return .nothing
         }
 
-        if chord {
+        if command || control || option {
             // The snapshot of the finished word survives the chord. A chord prints nothing,
             // so that word is still behind the caret — and one of these chords *is* the
             // shortcut asking to correct it. The tap sees the chord before the hotkey
@@ -229,15 +254,22 @@ final class CorrectionEngine {
             // shortcut is usually pressed straight after the word, before any space, and
             // the word is just as much behind the caret then. A pending dead key has
             // printed nothing, so its word cannot be counted and is dropped.
-            var finished = lastCompletedWord
-            if !keyBuffer.isEmpty, !bufferEndsWithDeadKey, let layout = wordStartLayout ?? cachedLayout {
+            let preserve = settings.isMacKeySwitchHotkey(
+                keycode: keycode, shift: shift, command: command,
+                control: control, option: option
+            )
+            var finished = preserve ? lastCompletedWord : nil
+            if preserve, !keyBuffer.isEmpty, !bufferEndsWithDeadKey,
+               let layout = wordStartLayout ?? cachedLayout {
                 finished = CompletedWord(
                     keystrokes: keyBuffer, layout: layout,
+                    sourceID: wordStartSourceID ?? cachedSourceID,
                     boundaryReachedScreen: false, finishedAt: environment.now
                 )
             }
             resetBuffer()
             lastCompletedWord = finished
+            if !preserve { clearCorrectionSnapshot() }
             return .nothing
         }
 
@@ -270,6 +302,7 @@ final class CorrectionEngine {
             let finished = CompletedWord(
                 keystrokes: keyBuffer,
                 layout: wordStartLayout ?? currentLang,
+                sourceID: wordStartSourceID ?? cachedSourceID,
                 boundaryReachedScreen: boundaryReachedScreen,
                 finishedAt: environment.now
             )
@@ -296,6 +329,9 @@ final class CorrectionEngine {
         // the buffer rather than ignore the key. The password heuristic keeps running —
         // "Ab12cd" is one run of keystrokes even though the digits never buffer.
         guard KeyMapping.isLetterKey(keycode) else {
+            if KeyMapping.printableButUnbufferedKeycodes.contains(keycode) {
+                suppressCorrectionUntilBoundary = true
+            }
             invalidateBuffer()
             return .nothing
         }
@@ -340,6 +376,7 @@ final class CorrectionEngine {
                 return .nothing
             }
             wordStartLayout = live
+            wordStartSourceID = cachedSourceID
         }
 
         keyBuffer.append(Keystroke(keycode: keycode, shift: shift, capsLock: capsLock))
@@ -368,11 +405,13 @@ final class CorrectionEngine {
         passwordHeuristic.removeLast()
         if keyBuffer.isEmpty {
             wordStartLayout = nil
+            wordStartSourceID = nil
         }
         // Keyed on the heuristic's own count, not the buffer's: the buffer also empties
         // when an unbufferable key arrives, and "Ab12" is still one run at that point.
         if passwordHeuristic.printableCount == 0 {
             passwordHeuristic.reset()
+            suppressCorrectionUntilBoundary = false
         }
         return learned.map { .learnException($0) } ?? .nothing
     }
@@ -401,8 +440,10 @@ final class CorrectionEngine {
     /// Read the live layout, refreshing the cache with it. Once per word.
     private func confirmedLayout() -> Language? {
         let live = environment.currentLayout()
-        if live != cachedLayout {
+        let sourceID = environment.currentSourceID()
+        if live != cachedLayout || sourceID != cachedSourceID {
             cachedLayout = live
+            cachedSourceID = sourceID
             cachedDeadKeys = environment.deadKeyProfile()
         }
         return live
@@ -411,20 +452,23 @@ final class CorrectionEngine {
     /// Decide whether the just-finished word should be retyped in the other layout.
     private func maybeCorrect(currentLanguage: Language, boundaryReachedScreen: Bool,
                               isCorrecting: Bool) -> CorrectionPlan? {
-        if skipCurrentWordCorrection { return nil }
+        if skipCurrentWordCorrection || suppressCorrectionUntilBoundary { return nil }
 
         guard keyBuffer.count >= settings.minWordLength,
               !isCorrecting,
               !passwordHeuristic.looksLikePassword else { return nil }
 
         let layout = wordStartLayout ?? currentLanguage
+        let sourceID = wordStartSourceID ?? cachedSourceID
         let buffer = keyBuffer
 
         // If the system disagrees about the layout now, the buffer does not describe what
         // is on screen. Unknown counts as changed: nil is a layout this app cannot read.
         guard let live = confirmedLayout(), live == layout else { return nil }
 
-        let originalText = KeyMapping.reconstruct(keycodes: buffer, language: layout)
+        let originalText = KeyMapping.reconstruct(
+            keycodes: buffer, language: layout, sourceID: sourceID
+        )
 
         // URLs, emails and identifiers read as ordinary words to the detector — several
         // US-layout punctuation keys are Ukrainian letters, so "ok.ua" buffers like any
@@ -434,16 +478,23 @@ final class CorrectionEngine {
         // Exceptions are keyed on what the user actually typed.
         if settings.isException(originalText) { return nil }
 
+        let targetSourceID = environment.preferredSourceID(for: layout.opposite)
         guard let intended = LanguageDetector.detectIntended(
             keycodes: buffer, currentLayout: layout,
-            threshold: settings.scoreThreshold, settings: nil, dictionary: dictionary
+            threshold: settings.scoreThreshold, settings: nil,
+            currentSourceID: sourceID,
+            targetSourceID: targetSourceID,
+            dictionary: dictionary
         ) else { return nil }
 
         // The password check is the one expensive guard — an accessibility round trip —
         // so it runs last, only for a word that is actually about to be rewritten.
         guard environment.secureFieldState() == .notSecure else { return nil }
 
-        let correctText = KeyMapping.reconstruct(keycodes: buffer, language: intended)
+        let correctText = KeyMapping.reconstruct(
+            keycodes: buffer, language: intended,
+            sourceID: targetSourceID
+        )
         return CorrectionPlan(
             originalText: originalText, correctText: correctText,
             from: layout, to: intended,
@@ -464,6 +515,7 @@ final class CorrectionEngine {
 
         let keystrokes: [Keystroke]
         let layout: Language
+        let sourceID: String?
         let boundaryReachedScreen: Bool
 
         if !keyBuffer.isEmpty {
@@ -474,11 +526,13 @@ final class CorrectionEngine {
             // Mid-word: no boundary space has been typed yet, so none is behind the caret.
             keystrokes = keyBuffer
             layout = wordStartLayout ?? cachedLayout ?? .english
+            sourceID = wordStartSourceID ?? cachedSourceID
             boundaryReachedScreen = false
         } else if let finished = lastCompletedWord,
                   environment.now.timeIntervalSince(finished.finishedAt) < Self.completedWordLifetime {
             keystrokes = finished.keystrokes
             layout = finished.layout
+            sourceID = finished.sourceID
             boundaryReachedScreen = finished.boundaryReachedScreen
         } else {
             return nil
@@ -486,8 +540,13 @@ final class CorrectionEngine {
         guard !keystrokes.isEmpty else { return nil }
 
         let target = layout.opposite
-        let originalText = KeyMapping.reconstruct(keycodes: keystrokes, language: layout)
-        let correctText = KeyMapping.reconstruct(keycodes: keystrokes, language: target)
+        let originalText = KeyMapping.reconstruct(
+            keycodes: keystrokes, language: layout, sourceID: sourceID
+        )
+        let correctText = KeyMapping.reconstruct(
+            keycodes: keystrokes, language: target,
+            sourceID: environment.preferredSourceID(for: target)
+        )
         guard originalText != correctText else { return nil }
 
         // The word is being replaced wherever it sits; the buffer no longer describes it.
@@ -542,8 +601,10 @@ final class CorrectionEngine {
         lastCompletedWord = nil
         keyBuffer.removeAll()
         wordStartLayout = nil
+        wordStartSourceID = nil
         skipCurrentWordCorrection = false
         bufferEndsWithDeadKey = false
+        suppressCorrectionUntilBoundary = false
         passwordHeuristic.reset()
     }
 
@@ -552,6 +613,7 @@ final class CorrectionEngine {
         lastCompletedWord = nil
         keyBuffer.removeAll()
         wordStartLayout = nil
+        wordStartSourceID = nil
         bufferEndsWithDeadKey = false
     }
 
@@ -566,6 +628,10 @@ final class CorrectionEngine {
 /// The real system, for the running app.
 struct LiveCorrectionEnvironment: CorrectionEnvironment {
     func currentLayout() -> Language? { InputSourceManager.currentLanguage() }
+    func currentSourceID() -> String? { InputSourceManager.currentInputSourceID() }
+    func preferredSourceID(for language: Language) -> String? {
+        InputSourceManager.preferredSourceID(for: language)
+    }
     func deadKeyProfile() -> InputSourceManager.DeadKeyProfile { InputSourceManager.deadKeyProfile() }
     var isSystemSecureInputEnabled: Bool { SecureInputDetector.isSystemSecureInputEnabled }
     func secureFieldState() -> SecureFieldState { SecureInputDetector.current() }

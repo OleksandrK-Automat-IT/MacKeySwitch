@@ -29,6 +29,46 @@ enum ResourceBundle {
             .appendingPathComponent(bundleName).path
         if let bundle = Bundle(path: siblingPath) { return bundle }
 
+        // 4. Test runners place the executable several levels below `.build/.../debug`,
+        // while SwiftPM keeps the resource bundle in that debug directory.
+        let searchRoots = [Bundle.main.bundleURL, Bundle.main.executableURL, execURL]
+            .compactMap { $0 }
+        for root in searchRoots {
+            var ancestor = root.hasDirectoryPath ? root : root.deletingLastPathComponent()
+            for _ in 0..<8 {
+                let candidate = ancestor.appendingPathComponent(bundleName).path
+                if let bundle = Bundle(path: candidate) { return bundle }
+                ancestor.deleteLastPathComponent()
+            }
+        }
+
+        // `swift test` may run through swiftpm-testing-helper, whose Bundle.main and
+        // argv[0] both point into the Command Line Tools. Use the package's build tree as
+        // a development-only fallback. `#filePath` is harmless in an installed app: the
+        // candidate simply does not exist there.
+        #if arch(arm64)
+        let buildArchitecture = "arm64"
+        #elseif arch(x86_64)
+        let buildArchitecture = "x86_64"
+        #else
+        let buildArchitecture = ""
+        #endif
+        let sourceRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        for configuration in ["debug", "release"] {
+            for relativeDirectory in [
+                ".build/\(buildArchitecture)-apple-macosx/\(configuration)",
+                ".build/\(buildArchitecture)/\(configuration)",
+                ".build/\(configuration)"
+            ] {
+                let candidate = sourceRoot.appendingPathComponent(relativeDirectory)
+                    .appendingPathComponent(bundleName).path
+                if let bundle = Bundle(path: candidate) { return bundle }
+            }
+        }
+
         return nil
     }()
 

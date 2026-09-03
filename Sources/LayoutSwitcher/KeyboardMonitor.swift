@@ -88,6 +88,12 @@ final class KeyboardMonitor {
         let correctionMode = SettingsModel.CorrectionMode.automatic
         func isAppExcluded(bundleID: String) -> Bool { false }
         func isException(_ word: String) -> Bool { false }
+        func isMacKeySwitchHotkey(
+            keycode: UInt16, shift: Bool, command: Bool, control: Bool, option: Bool
+        ) -> Bool {
+            guard control, shift, !command, !option else { return false }
+            return [UInt16(0x06), UInt16(0x07), KeyMapping.spaceKeycode].contains(keycode)
+        }
     }
     private static let noSettings = NoSettings()
 

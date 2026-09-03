@@ -262,13 +262,29 @@ final class DictionaryManager: WordSource {
         }
     }
 
+    /// Parse and merge an imported file without blocking SwiftUI. The completion is always
+    /// delivered on the main queue so callers can update settings safely.
+    func loadDictionaryFileAsync(
+        url: URL, language: Language, completion: @escaping (Int) -> Void
+    ) {
+        mutationQueue.async { [weak self] in
+            let count = self?.loadDictionaryFileNow(url: url, language: language) ?? 0
+            DispatchQueue.main.async { completion(count) }
+        }
+    }
+
     private func loadDictionaryFileNow(url: URL, language: Language) -> Int {
         guard let content = try? String(contentsOf: url, encoding: .utf8) else {
             print("[LayoutSwitcher] ERROR: Could not read dictionary file: \(url.path)")
             return 0
         }
 
-        let words = Self.parseWordList(content)
+        // A Hunspell/TSV/frequency file is still plain text, but its complete rows are not
+        // words and would never match typed input. Silently accepting them made the UI say
+        // an import succeeded while adding nothing useful to detection.
+        let words = Self.parseWordList(content).filter {
+            Self.isValidImportedWord($0, language: language)
+        }
         let index = Self.index(words)
 
         lock.lock()
@@ -285,7 +301,26 @@ final class DictionaryManager: WordSource {
         lock.unlock()
 
         print("[LayoutSwitcher] Loaded \(words.count) words from \(url.lastPathComponent) for \(language.rawValue). Total EN=\(enCount), UA=\(uaCount)")
-        return words.count
+        return index.words.count
+    }
+
+    static func isValidImportedWord(_ word: String, language: Language) -> Bool {
+        guard !word.isEmpty else { return false }
+        let apostrophes: Set<Character> = ["'", "’", "ʼ"]
+        var hasLetter = false
+        for character in word.lowercased() {
+            if apostrophes.contains(character) { continue }
+            switch language {
+            case .english:
+                guard character.isASCII && character.isLetter else { return false }
+            case .ukrainian:
+                guard "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя".contains(character) else {
+                    return false
+                }
+            }
+            hasLetter = true
+        }
+        return hasLetter
     }
 
     /// Reload all custom dictionary files from saved paths

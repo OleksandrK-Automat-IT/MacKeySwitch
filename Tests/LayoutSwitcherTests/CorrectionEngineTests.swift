@@ -6,12 +6,16 @@ import Foundation
 
 final class FakeEnvironment: CorrectionEnvironment {
     var layout: Language? = .english
+    var sourceID: String?
+    var preferredSources: [Language: String] = [:]
     var deadKeys = InputSourceManager.DeadKeyProfile()
     var isSystemSecureInputEnabled = false
     var field: SecureFieldState = .notSecure
     var now = Date(timeIntervalSince1970: 1_000_000)
 
     func currentLayout() -> Language? { layout }
+    func currentSourceID() -> String? { sourceID }
+    func preferredSourceID(for language: Language) -> String? { preferredSources[language] }
     func deadKeyProfile() -> InputSourceManager.DeadKeyProfile { deadKeys }
     func secureFieldState() -> SecureFieldState { field }
     func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }
@@ -26,6 +30,12 @@ struct TestSettings: CorrectionSettings {
     var exceptions: Set<String> = []
     func isAppExcluded(bundleID: String) -> Bool { excludedApps.contains(bundleID) }
     func isException(_ word: String) -> Bool { exceptions.contains(word.lowercased()) }
+    func isMacKeySwitchHotkey(
+        keycode: UInt16, shift: Bool, command: Bool, control: Bool, option: Bool
+    ) -> Bool {
+        control && shift && !command && !option
+            && [UInt16(0x06), UInt16(0x07), KeyMapping.spaceKeycode].contains(keycode)
+    }
 }
 
 /// A scripted keyboard in front of the engine.
@@ -96,6 +106,12 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
         let h = Harness()
         h.type("abc1de")
         #expect(h.buffer == "de")
+    }
+
+    @Test func lettersAfterADigitAreNeverCorrectedAsAStandaloneSuffix() {
+        let h = Harness()
+        h.type("foo1" + wrongLayoutWord)
+        #expect(h.space() == .nothing)
     }
 
     @Test func aSpaceEndsTheWord() {
@@ -172,6 +188,38 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
             originalText: "ghbdsn", correctText: "привіт",
             from: .english, to: .ukrainian,
             deleteCount: 7, restoreBoundarySpace: true)))
+    }
+
+    @Test func legacyUkrainianGeometryCorrectsIntoUkrainian() {
+        let h = Harness()
+        h.env.sourceID = "com.apple.keylayout.US"
+        h.env.preferredSources[.ukrainian] = KeyMapping.legacyUkrainianSourceID
+        h.engine.seedCaches(frontmostBundleID: "com.example.editor")
+
+        // Physical keys for "привіт" on Apple's legacy Ukrainian layout.
+        h.type("ghsdbn")
+        guard case .correct(let plan) = h.space() else {
+            Issue.record("standard Ukrainian target geometry was not corrected")
+            return
+        }
+        #expect(plan.originalText == "ghsdbn")
+        #expect(plan.correctText == "привіт")
+    }
+
+    @Test func legacyUkrainianGeometryCorrectsBackToEnglish() {
+        let h = Harness()
+        h.env.layout = .ukrainian
+        h.env.sourceID = KeyMapping.legacyUkrainianSourceID
+        h.env.preferredSources[.english] = "com.apple.keylayout.US"
+        h.engine.seedCaches(frontmostBundleID: "com.example.editor")
+
+        h.type("wisdom")
+        guard case .correct(let plan) = h.space() else {
+            Issue.record("standard Ukrainian source geometry was not corrected")
+            return
+        }
+        #expect(plan.originalText == "цшивщь")
+        #expect(plan.correctText == "wisdom")
     }
 
     @Test func aRealWordIsLeftAlone() {
@@ -407,11 +455,18 @@ private let apostropheKey: UInt16 = 0x27   // ' on US, є on Ukrainian
         // the plan must not erase a space that was never typed.
         let h = Harness(dictionary: StubDictionary())
         h.type(wrongLayoutWord)
-        _ = h.key(0x06, control: true)
+        _ = h.key(0x06, shift: true, control: true)
         let plan = h.engine.onDemandPlan(isCorrecting: false)
         #expect(plan?.correctText == "привіт")
         #expect(plan?.deleteCount == 6, "no space was typed, so none is erased")
         #expect(plan?.restoreBoundarySpace == true, "the conversion finishes the word")
+    }
+
+    @Test func anEditingChordInvalidatesTheFinishedWord() {
+        let h = Harness(dictionary: StubDictionary())
+        h.type(wrongLayoutWord); h.space()
+        h.key(0x7B, command: true) // Command-Left moves the caret
+        #expect(h.engine.onDemandPlan(isCorrecting: false) == nil)
     }
 
     @Test func aChordAfterAPendingDeadKeyLeavesNothingToConvert() {

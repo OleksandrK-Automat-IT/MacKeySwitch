@@ -305,6 +305,23 @@ final class SettingsModel: ObservableObject {
 
     @Published var sessionCorrections: Int = 0
 
+    enum HotkeyKind: String, CaseIterable, Hashable {
+        case correctWord, undo, selection
+
+        var label: String {
+            switch self {
+            case .correctWord: return L("hotkey.correctWord.label")
+            case .undo: return L("hotkey.label")
+            case .selection: return L("hotkey.selection.label")
+            }
+        }
+    }
+
+    /// Registration can fail because another action or another app owns the combination.
+    /// Keep failures visible in Settings instead of showing a shortcut that silently does
+    /// nothing. This is runtime state, not a preference.
+    @Published var hotkeyRegistrationFailures: [HotkeyKind: String] = [:]
+
     // MARK: - Init
 
     private init() {
@@ -333,31 +350,31 @@ final class SettingsModel: ObservableObject {
 
         self.totalCorrections = defaults.object(forKey: "totalCorrections") as? Int ?? 0
 
-        let storedKeyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? DefaultHotkeys.undo.keyCode
-        // Migrate the legacy "disabled" marker: 0 used to mean "no shortcut" (see
-        // HotkeyBinding.isEnabled), so a stored 0 is a cleared binding, never the 'A' key.
-        let keyCode = storedKeyCode == 0 ? -1 : storedKeyCode
         let storedMods = defaults.object(forKey: "undoHotkeyModifiers") as? Int
         let modifiers = storedMods.map { UInt(bitPattern: $0) }
             ?? DefaultHotkeys.undo.modifiers
+        let storedKeyCode = defaults.object(forKey: "undoHotkeyKeyCode") as? Int ?? DefaultHotkeys.undo.keyCode
+        let keyCode = Self.normalizedStoredKeyCode(storedKeyCode, modifiers: modifiers)
         self.undoHotkey = HotkeyBinding(keyCode: keyCode, modifiers: modifiers)
 
-        let storedSelectionKeyCode = defaults.object(forKey: "selectionHotkeyKeyCode") as? Int ?? DefaultHotkeys.selection.keyCode
-        let selectionKeyCode = storedSelectionKeyCode == 0 ? -1 : storedSelectionKeyCode
         let storedSelectionMods = defaults.object(forKey: "selectionHotkeyModifiers") as? Int
         let selectionModifiers = storedSelectionMods.map { UInt(bitPattern: $0) }
             ?? DefaultHotkeys.selection.modifiers
+        let storedSelectionKeyCode = defaults.object(forKey: "selectionHotkeyKeyCode") as? Int ?? DefaultHotkeys.selection.keyCode
+        let selectionKeyCode = Self.normalizedStoredKeyCode(
+            storedSelectionKeyCode, modifiers: selectionModifiers
+        )
         self.selectionHotkey = HotkeyBinding(keyCode: selectionKeyCode, modifiers: selectionModifiers)
 
         self.correctionMode = CorrectionMode(
             rawValue: defaults.object(forKey: "correctionMode") as? Int ?? 0
         ) ?? .automatic
 
-        let storedWordKeyCode = defaults.object(forKey: "correctWordHotkeyKeyCode") as? Int ?? DefaultHotkeys.correctWord.keyCode
-        let wordKeyCode = storedWordKeyCode == 0 ? -1 : storedWordKeyCode
         let storedWordMods = defaults.object(forKey: "correctWordHotkeyModifiers") as? Int
         let wordModifiers = storedWordMods.map { UInt(bitPattern: $0) }
             ?? DefaultHotkeys.correctWord.modifiers
+        let storedWordKeyCode = defaults.object(forKey: "correctWordHotkeyKeyCode") as? Int ?? DefaultHotkeys.correctWord.keyCode
+        let wordKeyCode = Self.normalizedStoredKeyCode(storedWordKeyCode, modifiers: wordModifiers)
         self.correctWordHotkey = HotkeyBinding(keyCode: wordKeyCode, modifiers: wordModifiers)
 
         if let data = defaults.data(forKey: "appRules"),
@@ -371,6 +388,36 @@ final class SettingsModel: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    /// Old builds used keycode 0 as the disabled sentinel. A real A shortcut also has
+    /// keycode 0, but necessarily carries modifiers; only the old zero/zero pair migrates.
+    static func normalizedStoredKeyCode(_ keyCode: Int, modifiers: UInt) -> Int {
+        keyCode == 0 && modifiers == 0 ? -1 : keyCode
+    }
+
+    func isMacKeySwitchHotkey(
+        keycode: UInt16, shift: Bool, command: Bool, control: Bool, option: Bool
+    ) -> Bool {
+        var flags: NSEvent.ModifierFlags = []
+        if shift { flags.insert(.shift) }
+        if command { flags.insert(.command) }
+        if control { flags.insert(.control) }
+        if option { flags.insert(.option) }
+        let pressed = HotkeyBinding(keyCode: Int(keycode), modifiers: flags.rawValue)
+        return [correctWordHotkey, undoHotkey, selectionHotkey].contains(pressed)
+    }
+
+    func setHotkeyRegistration(
+        _ kind: HotkeyKind, binding: HotkeyBinding, succeeded: Bool
+    ) {
+        if succeeded {
+            hotkeyRegistrationFailures.removeValue(forKey: kind)
+        } else {
+            hotkeyRegistrationFailures[kind] = L(
+                "hotkey.registrationFailed", kind.label, binding.description
+            )
+        }
+    }
 
     func recordCorrection() {
         totalCorrections += 1

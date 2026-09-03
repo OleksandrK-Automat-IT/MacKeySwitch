@@ -101,45 +101,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // `@Published` emits before the stored property is updated, so reading the model
         // inside this sink would apply the *previous* shortcut. `sink` on subscribe covers
         // the initial registration, so there is no separate call for it.
-        settings.$undoHotkey
-            .sink { [weak self] binding in self?.applyUndoHotkey(binding) }
-            .store(in: &cancellables)
-
         correctWordHotkey.onFire = { [weak self] in self?.monitor.correctLastWordOnDemand() }
-        settings.$correctWordHotkey
-            .sink { [weak self] binding in self?.applyCorrectWordHotkey(binding) }
-            .store(in: &cancellables)
-
         selectionHotkey.onFire = { [weak self] in self?.handleSelectionHotkey() }
-        settings.$selectionHotkey
-            .sink { [weak self] binding in self?.applySelectionHotkey(binding) }
+
+        // Treat the three shortcuts as one registry. If two collide, one registration
+        // fails; when either binding changes later, unregistering and retrying all three
+        // makes the previously blocked shortcut live again automatically.
+        Publishers.CombineLatest3(
+            settings.$undoHotkey,
+            settings.$correctWordHotkey,
+            settings.$selectionHotkey
+        )
+            .sink { [weak self] undo, correctWord, selection in
+                guard let self = self else { return }
+                self.undoHotkey.unregister()
+                self.correctWordHotkey.unregister()
+                self.selectionHotkey.unregister()
+                self.applyUndoHotkey(undo)
+                self.applyCorrectWordHotkey(correctWord)
+                self.applySelectionHotkey(selection)
+            }
             .store(in: &cancellables)
     }
 
     private func applyCorrectWordHotkey(_ binding: HotkeyBinding) {
         guard binding.isEnabled else {
             correctWordHotkey.unregister()
+            settings.setHotkeyRegistration(.correctWord, binding: binding, succeeded: true)
             print("[LayoutSwitcher] Correct-word hotkey disabled.")
             return
         }
         let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
-        _ = correctWordHotkey.register(
+        let succeeded = correctWordHotkey.register(
             keyCode: UInt32(binding.keyCode),
             carbonModifiers: CarbonHotkey.carbonModifiers(from: flags)
         )
+        settings.setHotkeyRegistration(.correctWord, binding: binding, succeeded: succeeded)
     }
 
     private func applySelectionHotkey(_ binding: HotkeyBinding) {
         guard binding.isEnabled else {
             selectionHotkey.unregister()
+            settings.setHotkeyRegistration(.selection, binding: binding, succeeded: true)
             debugLog("[LayoutSwitcher] selection hotkey disabled")
             return
         }
         let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
-        _ = selectionHotkey.register(
+        let succeeded = selectionHotkey.register(
             keyCode: UInt32(binding.keyCode),
             carbonModifiers: CarbonHotkey.carbonModifiers(from: flags)
         )
+        settings.setHotkeyRegistration(.selection, binding: binding, succeeded: succeeded)
     }
 
     private func handleSelectionHotkey() {
@@ -160,15 +172,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func applyUndoHotkey(_ binding: HotkeyBinding) {
         guard binding.isEnabled else {
             undoHotkey.unregister()
+            settings.setHotkeyRegistration(.undo, binding: binding, succeeded: true)
             print("[LayoutSwitcher] Undo hotkey disabled.")
             return
         }
         let flags = NSEvent.ModifierFlags(rawValue: binding.modifiers)
         let carbonMods = CarbonHotkey.carbonModifiers(from: flags)
-        _ = undoHotkey.register(
+        let succeeded = undoHotkey.register(
             keyCode: UInt32(binding.keyCode),
             carbonModifiers: carbonMods
         )
+        settings.setHotkeyRegistration(.undo, binding: binding, succeeded: succeeded)
     }
 
     private func handleUndoHotkey() {

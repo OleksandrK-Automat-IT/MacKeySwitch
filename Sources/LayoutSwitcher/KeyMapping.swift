@@ -26,6 +26,8 @@ struct Keystroke: Equatable {
 // Maps macOS virtual keycodes to characters for English (US) and Ukrainian layouts.
 // Only letter/number keys are mapped — modifiers, arrows, function keys are excluded.
 struct KeyMapping {
+    static let legacyUkrainianSourceID = "com.apple.keylayout.Ukrainian"
+
     struct CharPair {
         let en: Character
         let ua: Character
@@ -150,6 +152,12 @@ struct KeyMapping {
         0x12, 0x13, 0x14, 0x15, 0x17, 0x16, 0x1A, 0x1C, 0x19, 0x1D,
     ]
 
+    /// Printable keys that deliberately do not enter the word buffer. Once one appears,
+    /// later letters before the next boundary are part of the same identifier-like run and
+    /// must not be corrected as an isolated suffix.
+    static let printableButUnbufferedKeycodes: Set<UInt16> = Set([0x1B, 0x18, 0x2A, 0x2C])
+        .union(numberRowKeycodes)
+
     /// Word boundary keycodes: space, return, tab
     static let wordBoundaryKeycodes: Set<UInt16> = [
         0x31, // space
@@ -179,10 +187,25 @@ struct KeyMapping {
     /// Guaranteed to be exactly one character. The correction erases the old word with a
     /// counted run of backspaces, so a keystroke that expanded to two characters — or to
     /// none — would leave the caret in the wrong place and shred the surrounding text.
-    static func character(for stroke: Keystroke, language: Language) -> Character? {
+    static func character(
+        for stroke: Keystroke, language: Language, sourceID: String? = nil
+    ) -> Character? {
         let map = stroke.shift ? shifted : unshifted
         guard let pair = map[stroke.keycode] else { return nil }
-        let base = language == .english ? pair.en : pair.ua
+        let base: Character
+        if language == .ukrainian, sourceID == legacyUkrainianSourceID {
+            // Apple's legacy Ukrainian layout swaps И/І compared with Ukrainian-PC and
+            // puts apostrophe/tilde on the backtick key. Its source ID is still simply
+            // "Ukrainian", so language alone is insufficient to reconstruct the screen.
+            switch stroke.keycode {
+            case 0x01: base = stroke.shift ? "И" : "и"
+            case 0x0B: base = stroke.shift ? "І" : "і"
+            case 0x32: base = stroke.shift ? "~" : "'"
+            default: base = pair.ua
+            }
+        } else {
+            base = language == .english ? pair.en : pair.ua
+        }
 
         // Caps Lock only affects letters: ';' stays ';' but 'ж' becomes 'Ж'. Combined with
         // Shift it types lowercase, which is why this inverts rather than uppercases.
@@ -195,10 +218,14 @@ struct KeyMapping {
     }
 
     /// Reconstruct text from buffered keystrokes for a given language
-    static func reconstruct(keycodes: [Keystroke], language: Language) -> String {
+    static func reconstruct(
+        keycodes: [Keystroke], language: Language, sourceID: String? = nil
+    ) -> String {
         var result = ""
         for stroke in keycodes {
-            guard let char = character(for: stroke, language: language) else { continue }
+            guard let char = character(
+                for: stroke, language: language, sourceID: sourceID
+            ) else { continue }
             result.append(char)
         }
         return result

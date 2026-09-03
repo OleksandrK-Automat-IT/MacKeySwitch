@@ -43,6 +43,7 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
 - Password heuristic (does not touch mixed-case + digit/symbol combos)
 - Confidence-weighted detection (6 signals, 50k-word bundled dictionaries + macOS spelling dicts)
 - Two correction modes: automatic (on space) or only when asked via shortcut
+- Exact geometry support for both Apple `Ukrainian` and `Ukrainian-PC` input sources
 - Selection conversion: convert any selected text, not just the word being typed
 - Password fields detected through the system, not guessed from the characters
 - URLs, emails and identifiers left alone
@@ -241,7 +242,9 @@ terminal before theorising — two speculative fixes shipped here for lack of th
    combination system-wide, and apps where it is the native undo lose it
 6. **Layout is read live at word start**: the cached layout is fed by a distributed
    notification that arrives late — reliably so right after the app's own switch — and a word
-   attributed to the previous layout "corrects" into the text already on screen
+   attributed to the previous layout "corrects" into the text already on screen. The exact
+   source ID is retained too: Apple's `Ukrainian` layout swaps И/І compared with
+   `Ukrainian-PC` and uses a different backtick key
 7. **Selection conversion borrows the pasteboard**: `AXSelectedText` is optional and most
    browsers and editors do not publish it, so the fallback is ⌘C. The original pasteboard is
    snapshotted and restored, but the converted text is briefly on it
@@ -269,7 +272,7 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (224 tests, 26 suites)
+- [ ] Unit tests in `run-tests.sh` all pass (234 tests, 27 suites)
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Dictionary coverage tests document any gaps
 - [ ] Password heuristic tests cover edge cases

@@ -6,6 +6,17 @@ import Foundation
 /// nothing here touches the shared instance or the user's real custom files.
 @Suite struct DictionaryManagerTests {
 
+    @Test func importedRowsMustBeWordsInTheSelectedLanguage() {
+        #expect(DictionaryManager.isValidImportedWord("hello", language: .english))
+        #expect(DictionaryManager.isValidImportedWord("can't", language: .english))
+        #expect(!DictionaryManager.isValidImportedWord("hello 42", language: .english))
+        #expect(!DictionaryManager.isValidImportedWord("привіт", language: .english))
+        #expect(DictionaryManager.isValidImportedWord("привіт", language: .ukrainian))
+        #expect(DictionaryManager.isValidImportedWord("імʼя", language: .ukrainian))
+        #expect(!DictionaryManager.isValidImportedWord("слово 100", language: .ukrainian))
+        #expect(!DictionaryManager.isValidImportedWord("слово/AB", language: .ukrainian))
+    }
+
     private func tempFile(_ content: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("mks-\(UUID().uuidString).txt")
@@ -33,11 +44,11 @@ import Foundation
     }
 
     @Test func trimsAndLowercases() throws {
-        let url = try tempFile("  QwZxVb  \n\tPLMKJQ\t\n")
+        let url = try tempFile("  ПрИвІт  \n\tСЛОВО\t\n")
         let dm = DictionaryManager()
         #expect(dm.loadDictionaryFile(url: url, language: .ukrainian) == 2)
-        #expect(dm.isUkrainianWord("qwzxvb"))
-        #expect(dm.isUkrainianWord("PLMKJQ"), "lookup is case-insensitive too")
+        #expect(dm.isUkrainianWord("привіт"))
+        #expect(dm.isUkrainianWord("СЛОВО"), "lookup is case-insensitive too")
     }
 
     @Test func aMissingFileLoadsNothingAndDoesNotCrash() {
@@ -97,7 +108,16 @@ import Foundation
         // benchmark: generous bound, deterministic input.
         var lines: [String] = []
         lines.reserveCapacity(200_000)
-        for i in 0..<200_000 { lines.append("w\(i)abc") }
+        for i in 0..<200_000 {
+            var value = i
+            var bytes = [UInt8](repeating: Character("a").asciiValue!, count: 5)
+            bytes[0] = Character("w").asciiValue!
+            for position in stride(from: 4, through: 1, by: -1) {
+                bytes[position] += UInt8(value % 26)
+                value /= 26
+            }
+            lines.append(String(bytes: bytes, encoding: .utf8)!)
+        }
         let url = try tempFile(lines.joined(separator: "\n"))
         let dm = DictionaryManager()
         let t = CFAbsoluteTimeGetCurrent()

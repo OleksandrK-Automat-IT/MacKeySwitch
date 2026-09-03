@@ -92,11 +92,17 @@ struct LanguageDetector {
         currentLayout: Language,
         threshold: Int,
         settings: SettingsModel?,
+        currentSourceID: String? = nil,
+        targetSourceID: String? = nil,
         dictionary: WordSource = DictionaryManager.shared
     ) -> Language? {
         let target = currentLayout.opposite
-        let currentText = KeyMapping.reconstruct(keycodes: keycodes, language: currentLayout)
-        let targetText = KeyMapping.reconstruct(keycodes: keycodes, language: target)
+        let currentText = KeyMapping.reconstruct(
+            keycodes: keycodes, language: currentLayout, sourceID: currentSourceID
+        )
+        let targetText = KeyMapping.reconstruct(
+            keycodes: keycodes, language: target, sourceID: targetSourceID
+        )
 
         // Exceptions are keyed on what the user actually typed. Checking the other
         // reading instead would block a genuinely wrong-layout word whose correct-layout

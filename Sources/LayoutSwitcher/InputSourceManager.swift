@@ -10,7 +10,6 @@ final class InputSourceManager {
     static let ukrainianSourceIDs: Set<String> = [
         "com.apple.keylayout.Ukrainian",
         "com.apple.keylayout.Ukrainian-PC",
-        "com.apple.keylayout.UkrainianEnhanced",
     ]
 
     /// Latin layouts this app treats as "English". Matched exactly: a substring test for
@@ -20,10 +19,7 @@ final class InputSourceManager {
         "com.apple.keylayout.USInternational-PC",
         "com.apple.keylayout.USExtended",
         "com.apple.keylayout.ABC",
-        "com.apple.keylayout.ABC-QWERTZ",
-        "com.apple.keylayout.ABC-AZERTY",
         "com.apple.keylayout.British",
-        "com.apple.keylayout.British-PC",
         "com.apple.keylayout.Australian",
         "com.apple.keylayout.Canadian",
         "com.apple.keylayout.Irish",
@@ -51,10 +47,10 @@ final class InputSourceManager {
         if englishSourceIDs.contains(sourceID) {
             return .english
         }
-        // Check all known Ukrainian variants
-        if ukrainianSourceIDs.contains(sourceID)
-            || sourceID.lowercased().contains("ukrainian")
-        {
+        // Match exactly. A name containing "Ukrainian" does not mean it has the same
+        // physical key geometry as Ukrainian-PC; treating it as supported can make the
+        // counted-backspace correction retype the wrong characters.
+        if ukrainianSourceIDs.contains(sourceID) {
             return .ukrainian
         }
         return nil
@@ -83,6 +79,23 @@ final class InputSourceManager {
         guard let language = language(ofSourceID: sourceID) else { return nil }
         lastUsedSourceID[language] = sourceID
         return language
+    }
+
+    /// The exact source whose geometry will be used for a language switch. Correction
+    /// planning needs this before the switch because two Ukrainian layouts map И/І to
+    /// different physical keys.
+    static func preferredSourceID(for language: Language) -> String? {
+        let current = currentInputSourceID()
+        if self.language(ofSourceID: current) == language {
+            lastUsedSourceID[language] = current
+            return current
+        }
+        let enabled = enabledSources()
+        if let remembered = lastUsedSourceID[language],
+           enabled.contains(where: { $0.id == remembered }) {
+            return remembered
+        }
+        return enabled.first(where: { self.language(ofSourceID: $0.id) == language })?.id
     }
 
     /// Switch to the specified language input source, preferring the exact source the user
@@ -174,7 +187,8 @@ final class InputSourceManager {
     static func translate(
         _ keycode: UInt16,
         layoutData: Data,
-        deadKeyState: inout UInt32
+        deadKeyState: inout UInt32,
+        modifierState: UInt32 = 0
     ) -> String? {
         var characters = [UniChar](repeating: 0, count: 8)
         var length = 0
@@ -183,7 +197,7 @@ final class InputSourceManager {
             guard let base = pointer.baseAddress else { return OSStatus(paramErr) }
             return UCKeyTranslate(
                 base.assumingMemoryBound(to: UCKeyboardLayout.self),
-                keycode, UInt16(kUCKeyActionDown), 0, UInt32(LMGetKbdType()),
+                keycode, UInt16(kUCKeyActionDown), modifierState, UInt32(LMGetKbdType()),
                 0, &state, characters.count, &length, &characters
             )
         }

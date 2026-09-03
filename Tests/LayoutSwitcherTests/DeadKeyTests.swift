@@ -94,6 +94,52 @@ import Carbon
         #expect(profile.dead.isEmpty)
     }
 
+    @Test func everyRecognisedAppleLayoutMatchesTheStaticCharacterTable() throws {
+        let sources = try #require(
+            TISCreateInputSourceList(nil, true)?.takeRetainedValue() as? [TISInputSource]
+        )
+        for source in sources {
+            guard let idPtr = TISGetInputSourceProperty(source, kTISPropertyInputSourceID),
+                  let dataPtr = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)
+            else { continue }
+            let id = Unmanaged<CFString>.fromOpaque(idPtr).takeUnretainedValue() as String
+            guard let language = InputSourceManager.language(ofSourceID: id) else { continue }
+            let data = unsafeBitCast(dataPtr, to: CFData.self) as Data
+            let profile = InputSourceManager.deadKeyProfile(layoutData: data)
+
+            for keycode in KeyMapping.bufferedKeycodes where !profile.dead.contains(keycode) {
+                var state: UInt32 = 0
+                let actual = InputSourceManager.translate(
+                    keycode, layoutData: data, deadKeyState: &state
+                )
+                let expected = KeyMapping.character(
+                    for: Keystroke(keycode: keycode), language: language, sourceID: id
+                ).map(String.init)
+                #expect(actual == expected,
+                        "\(id) key 0x\(String(keycode, radix: 16)) types \(actual ?? "nil"), expected \(expected ?? "nil")")
+
+                state = 0
+                let shiftedActual = InputSourceManager.translate(
+                    keycode, layoutData: data, deadKeyState: &state,
+                    modifierState: UInt32(shiftKey >> 8)
+                )
+                let shiftedExpected = KeyMapping.character(
+                    for: Keystroke(keycode: keycode, shift: true),
+                    language: language, sourceID: id
+                ).map(String.init)
+                #expect(shiftedActual == shiftedExpected,
+                        "\(id) shifted key 0x\(String(keycode, radix: 16)) types \(shiftedActual ?? "nil"), expected \(shiftedExpected ?? "nil")")
+            }
+        }
+    }
+
+    @Test func differentlyArrangedLayoutsAreNotClaimedAsSupported() {
+        for id in ["com.apple.keylayout.ABC-AZERTY", "com.apple.keylayout.ABC-QWERTZ",
+                   "com.apple.keylayout.British-PC"] {
+            #expect(InputSourceManager.language(ofSourceID: id) == nil)
+        }
+    }
+
     /// Mid-word dead keys stay unreconstructable, which is why the monitor invalidates the
     /// buffer as soon as a second key follows one.
     @Test func aDeadKeyFollowedByALetterCollapsesIntoOneCharacter() throws {

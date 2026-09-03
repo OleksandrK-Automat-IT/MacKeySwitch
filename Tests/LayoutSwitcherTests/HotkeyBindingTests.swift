@@ -37,6 +37,12 @@ import AppKit
         let binding = HotkeyBinding(keyCode: 0, modifiers: controlOption)
         #expect(binding.isEnabled)
         #expect(binding.description == "\u{2303}\u{2325}A")
+        #expect(SettingsModel.normalizedStoredKeyCode(0, modifiers: controlOption) == 0)
+    }
+
+    @Test func onlyTheLegacyZeroZeroBindingMigratesToDisabled() {
+        #expect(SettingsModel.normalizedStoredKeyCode(0, modifiers: 0) == -1)
+        #expect(SettingsModel.normalizedStoredKeyCode(6, modifiers: 0) == 6)
     }
 
     @Test func theDefaultBindingReadsAsControlShiftZ() {

@@ -225,6 +225,13 @@ struct GeneralTab: View {
                 HotkeyRecorderRow(labelKey: "hotkey.label", hotkey: $settings.undoHotkey)
                 HotkeyRecorderRow(labelKey: "hotkey.selection.label",
                                   hotkey: $settings.selectionHotkey)
+                ForEach(SettingsModel.HotkeyKind.allCases, id: \.self) { kind in
+                    if let failure = settings.hotkeyRegistrationFailures[kind] {
+                        Text(failure)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
                 Text(L("hotkey.selection.hint"))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -649,6 +656,8 @@ struct DictionaryTab: View {
     @State private var newEnglishWord = ""
     @State private var newUkrainianWord = ""
     @State private var importStatusMessage = ""
+    @State private var importSucceeded = true
+    @State private var importInProgress = false
 
     /// One importer, told which side asked for it.
     ///
@@ -691,6 +700,7 @@ struct DictionaryTab: View {
                         beginImport(for: .english)
                     }
                     .font(.caption)
+                    .disabled(importInProgress)
                 }
 
                 // Ukrainian column
@@ -722,6 +732,7 @@ struct DictionaryTab: View {
                         beginImport(for: .ukrainian)
                     }
                     .font(.caption)
+                    .disabled(importInProgress)
                 }
             }
 
@@ -771,7 +782,7 @@ struct DictionaryTab: View {
             if !importStatusMessage.isEmpty {
                 Text(importStatusMessage)
                     .font(.caption)
-                    .foregroundColor(.green)
+                    .foregroundColor(importSucceeded ? .green : .red)
             }
         }
         .padding()
@@ -796,25 +807,37 @@ struct DictionaryTab: View {
 
     private func importDictionaryFile(url: URL, language: Language) {
         let accessing = url.startAccessingSecurityScopedResource()
-        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        importInProgress = true
+        importStatusMessage = L("dictionary.importing", url.lastPathComponent)
+        importSucceeded = true
 
-        let count = DictionaryManager.shared.loadDictionaryFile(url: url, language: language)
+        DictionaryManager.shared.loadDictionaryFileAsync(url: url, language: language) { count in
+            if accessing { url.stopAccessingSecurityScopedResource() }
+            importInProgress = false
+            importSucceeded = count > 0
 
-        // Save path for reloading on next launch
-        switch language {
-        case .english:
-            if !settings.customEnglishDictionaryPaths.contains(url.path) {
-                settings.customEnglishDictionaryPaths.append(url.path)
+            guard count > 0 else {
+                importStatusMessage = L("dictionary.importFailed", url.lastPathComponent)
+                return
             }
-        case .ukrainian:
-            if !settings.customUkrainianDictionaryPaths.contains(url.path) {
-                settings.customUkrainianDictionaryPaths.append(url.path)
-            }
-        }
 
-        importStatusMessage = L("dictionary.importedCount", count, url.lastPathComponent)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            importStatusMessage = ""
+            // Persist only a file that yielded usable words. A failed path should not be
+            // retried on every future launch.
+            switch language {
+            case .english:
+                if !settings.customEnglishDictionaryPaths.contains(url.path) {
+                    settings.customEnglishDictionaryPaths.append(url.path)
+                }
+            case .ukrainian:
+                if !settings.customUkrainianDictionaryPaths.contains(url.path) {
+                    settings.customUkrainianDictionaryPaths.append(url.path)
+                }
+            }
+
+            importStatusMessage = L("dictionary.importedCount", count, url.lastPathComponent)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                importStatusMessage = ""
+            }
         }
     }
 

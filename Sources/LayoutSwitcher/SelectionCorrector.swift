@@ -16,6 +16,9 @@ enum SelectionCorrector {
     enum Failure: Error {
         case noAccessibility
         case noSelection
+        case secureInput
+        case contextChanged
+        case alreadyRunning
         /// The selection is not recognisably one layout, so converting it would corrupt
         /// whichever half is already right.
         case ambiguousLanguage
@@ -33,20 +36,52 @@ enum SelectionCorrector {
     /// How long to give the frontmost app to answer a copy.
     private static let copyTimeout: TimeInterval = 0.4
 
+    /// Main-thread state. A second conversion would overwrite the first one's temporary
+    /// pasteboard contents and make both operations target an uncertain selection.
+    private static var operationInProgress = false
+
+    private struct EditingContext {
+        let pid: pid_t
+        let focusedElement: AXUIElement?
+    }
+
     static func correctSelection(completion: @escaping (Result<String, Failure>) -> Void) {
+        guard !operationInProgress else {
+            completion(.failure(.alreadyRunning))
+            return
+        }
         guard AXIsProcessTrusted() else {
             completion(.failure(.noAccessibility))
             return
         }
+        guard SecureInputDetector.current() == .notSecure else {
+            completion(.failure(.secureInput))
+            return
+        }
+        guard let originalContext = editingContext() else {
+            completion(.failure(.contextChanged))
+            return
+        }
+        operationInProgress = true
+
+        func complete(_ result: Result<String, Failure>) {
+            operationInProgress = false
+            completion(result)
+        }
 
         whenModifiersAreReleased {
+            guard contextMatches(originalContext),
+                  SecureInputDetector.current() == .notSecure else {
+                complete(.failure(.contextChanged))
+                return
+            }
             let pasteboard = NSPasteboard.general
             let saved = snapshot(pasteboard)
 
             readSelection(pasteboard: pasteboard) { selection in
                 func fail(_ reason: Failure) {
                     restore(saved, to: pasteboard)
-                    completion(.failure(reason))
+                    complete(.failure(reason))
                 }
 
                 guard let selection = selection, !selection.isEmpty else {
@@ -59,6 +94,12 @@ enum SelectionCorrector {
                 let converted = LayoutTransliterator.convert(selection, to: target)
                 guard converted != selection else {
                     return fail(.nothingToChange)
+                }
+                guard contextMatches(originalContext) else {
+                    return fail(.contextChanged)
+                }
+                guard SecureInputDetector.current() == .notSecure else {
+                    return fail(.secureInput)
                 }
 
                 pasteboard.clearContents()
@@ -76,7 +117,7 @@ enum SelectionCorrector {
                     }
                     debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
                              + "\(target.rawValue), \(selection.count) chars")
-                    completion(.success(converted))
+                    complete(.success(converted))
                 }
             }
         }
@@ -120,12 +161,8 @@ enum SelectionCorrector {
     }
 
     /// The selected text of the focused element in the frontmost app, if it publishes one.
-    private static func accessibilitySelection() -> String? {
-        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
-            return nil
-        }
+    private static func focusedElement(pid: pid_t) -> AXUIElement? {
         let application = AXUIElementCreateApplication(pid)
-
         var focusedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
                 application, kAXFocusedUIElementAttribute as CFString, &focusedValue) == .success,
@@ -134,7 +171,32 @@ enum SelectionCorrector {
         else {
             return nil
         }
-        let element = focused as! AXUIElement  // type ID checked immediately above
+        return (focused as! AXUIElement) // type ID checked immediately above
+    }
+
+    private static func editingContext() -> EditingContext? {
+        guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return nil
+        }
+        return EditingContext(pid: pid, focusedElement: focusedElement(pid: pid))
+    }
+
+    private static func contextMatches(_ original: EditingContext) -> Bool {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == original.pid else {
+            return false
+        }
+        let current = focusedElement(pid: original.pid)
+        switch (original.focusedElement, current) {
+        case let (lhs?, rhs?): return CFEqual(lhs, rhs)
+        case (nil, nil): return true
+        default: return false
+        }
+    }
+
+    private static func accessibilitySelection() -> String? {
+        guard let context = editingContext(), let element = context.focusedElement else {
+            return nil
+        }
 
         var selectedValue: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -150,8 +212,12 @@ enum SelectionCorrector {
 
     /// Items read from a pasteboard are invalidated by `clearContents()`, so their data has
     /// to be copied out before anything is cleared.
-    private static func snapshot(_ pasteboard: NSPasteboard) -> [NSPasteboardItem] {
-        (pasteboard.pasteboardItems ?? []).map { item in
+    struct PasteboardSnapshot {
+        let items: [NSPasteboardItem]
+    }
+
+    static func snapshot(_ pasteboard: NSPasteboard) -> PasteboardSnapshot {
+        let items = (pasteboard.pasteboardItems ?? []).map { item in
             let copy = NSPasteboardItem()
             for type in item.types {
                 if let data = item.data(forType: type) {
@@ -160,12 +226,14 @@ enum SelectionCorrector {
             }
             return copy
         }
+        return PasteboardSnapshot(items: items)
     }
 
-    private static func restore(_ items: [NSPasteboardItem], to pasteboard: NSPasteboard) {
-        guard !items.isEmpty else { return }
+    static func restore(_ snapshot: PasteboardSnapshot, to pasteboard: NSPasteboard) {
         pasteboard.clearContents()
-        pasteboard.writeObjects(items)
+        if !snapshot.items.isEmpty {
+            pasteboard.writeObjects(snapshot.items)
+        }
     }
 
     // MARK: - Synthetic keys
