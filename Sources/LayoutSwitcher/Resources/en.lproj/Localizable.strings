@@ -15,6 +15,7 @@
 /* Languages */
 "language.english" = "English";
 "language.ukrainian" = "Ukrainian";
+"language.russian" = "Russian";
 "language.other" = "Other";
 "language.system" = "System";
 

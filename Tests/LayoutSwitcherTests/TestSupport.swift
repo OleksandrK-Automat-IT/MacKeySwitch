@@ -26,9 +26,14 @@ enum Corpus {
 struct StubDictionary: WordSource {
     var english: Set<String> = []
     var ukrainian: Set<String> = []
+    var russian: Set<String> = []
 
     private func words(for language: Language) -> Set<String> {
-        language == .english ? english : ukrainian
+        switch language {
+        case .english: return english
+        case .ukrainian: return ukrainian
+        case .russian: return russian
+        }
     }
 
     func isWord(_ word: String, language: Language) -> Bool {

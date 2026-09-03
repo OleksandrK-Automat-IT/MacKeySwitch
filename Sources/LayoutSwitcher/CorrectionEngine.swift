@@ -19,6 +19,9 @@ protocol CorrectionEnvironment {
     /// physical key geometry.
     func currentSourceID() -> String?
     func preferredSourceID(for language: Language) -> String?
+    /// The Cyrillic layout English pairs with — the one the user last worked in. Nil when
+    /// no Cyrillic layout is enabled, in which case English words are left alone.
+    func preferredCyrillicLanguage() -> Language?
     func deadKeyProfile() -> InputSourceManager.DeadKeyProfile
     var isSystemSecureInputEnabled: Bool { get }
     func secureFieldState() -> SecureFieldState
@@ -28,6 +31,7 @@ protocol CorrectionEnvironment {
 extension CorrectionEnvironment {
     func currentSourceID() -> String? { nil }
     func preferredSourceID(for language: Language) -> String? { nil }
+    func preferredCyrillicLanguage() -> Language? { .ukrainian }
 }
 
 /// The settings the engine consults. `SettingsModel` conforms; tests use a plain struct.
@@ -437,6 +441,13 @@ final class CorrectionEngine {
 
     // MARK: Deciding
 
+    /// The layout a wrong-layout word is retyped in. Cyrillic goes back to English;
+    /// English goes to whichever Cyrillic layout the user last worked in, so a Russian
+    /// typist is not handed Ukrainian letters and vice versa. Never Cyrillic to Cyrillic.
+    private func correctionTarget(for layout: Language) -> Language? {
+        layout.isCyrillic ? .english : environment.preferredCyrillicLanguage()
+    }
+
     /// Read the live layout, refreshing the cache with it. Once per word.
     private func confirmedLayout() -> Language? {
         let live = environment.currentLayout()
@@ -461,6 +472,7 @@ final class CorrectionEngine {
         let layout = wordStartLayout ?? currentLanguage
         let sourceID = wordStartSourceID ?? cachedSourceID
         let buffer = keyBuffer
+        guard let target = correctionTarget(for: layout) else { return nil }
 
         // If the system disagrees about the layout now, the buffer does not describe what
         // is on screen. Unknown counts as changed: nil is a layout this app cannot read.
@@ -478,9 +490,9 @@ final class CorrectionEngine {
         // Exceptions are keyed on what the user actually typed.
         if settings.isException(originalText) { return nil }
 
-        let targetSourceID = environment.preferredSourceID(for: layout.opposite)
+        let targetSourceID = environment.preferredSourceID(for: target)
         guard let intended = LanguageDetector.detectIntended(
-            keycodes: buffer, currentLayout: layout,
+            keycodes: buffer, currentLayout: layout, target: target,
             threshold: settings.scoreThreshold, settings: nil,
             currentSourceID: sourceID,
             targetSourceID: targetSourceID,
@@ -537,9 +549,8 @@ final class CorrectionEngine {
         } else {
             return nil
         }
-        guard !keystrokes.isEmpty else { return nil }
+        guard !keystrokes.isEmpty, let target = correctionTarget(for: layout) else { return nil }
 
-        let target = layout.opposite
         let originalText = KeyMapping.reconstruct(
             keycodes: keystrokes, language: layout, sourceID: sourceID
         )
@@ -632,6 +643,7 @@ struct LiveCorrectionEnvironment: CorrectionEnvironment {
     func preferredSourceID(for language: Language) -> String? {
         InputSourceManager.preferredSourceID(for: language)
     }
+    func preferredCyrillicLanguage() -> Language? { InputSourceManager.preferredCyrillicLanguage() }
     func deadKeyProfile() -> InputSourceManager.DeadKeyProfile { InputSourceManager.deadKeyProfile() }
     var isSystemSecureInputEnabled: Bool { SecureInputDetector.isSystemSecureInputEnabled }
     func secureFieldState() -> SecureFieldState { SecureInputDetector.current() }

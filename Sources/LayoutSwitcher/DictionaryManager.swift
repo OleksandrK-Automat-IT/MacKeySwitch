@@ -6,10 +6,14 @@ final class DictionaryManager: WordSource {
 
     private var englishWords: Set<String> = []
     private var ukrainianWords: Set<String> = []
+    /// No bundled list ships for Russian; the system dictionary carries it. Imports land
+    /// here so the lookup chain is the same shape for every language.
+    private var russianWords: Set<String> = []
 
     // Prefix sets for fast partial-word lookup (first 3 chars of every word)
     private var englishPrefixes: Set<String> = []
     private var ukrainianPrefixes: Set<String> = []
+    private var russianPrefixes: Set<String> = []
 
     // Guards all four sets. Recursive because a full rebuild holds the lock across all of
     // its phases and then reuses the same small mutation helpers. Readers therefore see
@@ -193,6 +197,7 @@ final class DictionaryManager: WordSource {
         switch language {
         case .english: bundled = isEnglishWord(word)
         case .ukrainian: bundled = isUkrainianWord(word)
+        case .russian: bundled = isRussianWord(word)
         }
         return bundled || SystemSpellChecker.shared.isWord(word, language: language)
     }
@@ -201,7 +206,25 @@ final class DictionaryManager: WordSource {
         switch language {
         case .english: return isEnglishPrefix(prefix)
         case .ukrainian: return isUkrainianPrefix(prefix)
+        case .russian: return isRussianPrefix(prefix)
         }
+    }
+
+    func isRussianWord(_ word: String) -> Bool {
+        let lower = word.lowercased()
+        lock.lock(); defer { lock.unlock() }
+        return russianWords.contains(lower)
+    }
+
+    /// With no corpus there is no basis for calling a prefix invalid, so an empty index
+    /// answers "could be" — the same answer the other languages give for a prefix too
+    /// short to judge. Anything else would hand every Russian word a bonus it did not earn.
+    func isRussianPrefix(_ prefix: String) -> Bool {
+        let lower = prefix.lowercased()
+        guard lower.count >= 3 else { return true }
+        let p = String(lower.prefix(3))
+        lock.lock(); defer { lock.unlock() }
+        return russianPrefixes.isEmpty || russianPrefixes.contains(p)
     }
 
     // MARK: - Public API
@@ -295,6 +318,9 @@ final class DictionaryManager: WordSource {
         case .ukrainian:
             ukrainianWords.formUnion(index.words)
             ukrainianPrefixes.formUnion(index.prefixes)
+        case .russian:
+            russianWords.formUnion(index.words)
+            russianPrefixes.formUnion(index.prefixes)
         }
         let enCount = englishWords.count
         let uaCount = ukrainianWords.count
@@ -315,6 +341,10 @@ final class DictionaryManager: WordSource {
                 guard character.isASCII && character.isLetter else { return false }
             case .ukrainian:
                 guard "абвгґдеєжзиіїйклмнопрстуфхцчшщьюя".contains(character) else {
+                    return false
+                }
+            case .russian:
+                guard "абвгдеёжзийклмнопрстуфхцчшщъыьэюя".contains(character) else {
                     return false
                 }
             }

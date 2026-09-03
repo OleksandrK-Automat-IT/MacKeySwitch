@@ -45,6 +45,7 @@ final class SystemSpellChecker {
         switch language {
         case .english: candidates = ["en", "en_US", "en_GB"]
         case .ukrainian: candidates = ["uk", "uk_UA"]
+        case .russian: candidates = ["ru", "ru_RU"]
         }
         return candidates.first { availableLanguages.contains($0) }
     }

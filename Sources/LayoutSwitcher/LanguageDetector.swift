@@ -67,9 +67,10 @@ struct LanguageDetector {
         currentText: String,
         targetText: String,
         currentLanguage: Language,
+        target: Language? = nil,
         dictionary: WordSource
     ) -> Evidence {
-        let target = currentLanguage.opposite
+        let target = target ?? currentLanguage.opposite
         var evidence = Evidence()
 
         evidence.currentIsWord = dictionary.isWord(currentText, language: currentLanguage)
@@ -90,13 +91,16 @@ struct LanguageDetector {
     static func detectIntended(
         keycodes: [Keystroke],
         currentLayout: Language,
+        target: Language? = nil,
         threshold: Int,
         settings: SettingsModel?,
         currentSourceID: String? = nil,
         targetSourceID: String? = nil,
         dictionary: WordSource = DictionaryManager.shared
     ) -> Language? {
-        let target = currentLayout.opposite
+        // The engine names the target — English pairs with the user's last Cyrillic
+        // layout. Left out, the historical Ukrainian pair applies.
+        let target = target ?? currentLayout.opposite
         let currentText = KeyMapping.reconstruct(
             keycodes: keycodes, language: currentLayout, sourceID: currentSourceID
         )
@@ -116,6 +120,7 @@ struct LanguageDetector {
             currentText: currentText,
             targetText: targetText,
             currentLanguage: currentLayout,
+            target: target,
             dictionary: dictionary
         )
         let score = evidence.score

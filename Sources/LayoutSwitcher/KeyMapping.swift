@@ -27,6 +27,21 @@ struct Keystroke: Equatable {
 // Only letter/number keys are mapped — modifiers, arrows, function keys are excluded.
 struct KeyMapping {
     static let legacyUkrainianSourceID = "com.apple.keylayout.Ukrainian"
+    /// Apple's own Russian layout. The PC one is "RussianWin"; the two differ on one key.
+    static let legacyRussianSourceID = "com.apple.keylayout.Russian"
+
+    /// Where Russian ЙЦУКЕН differs from Ukrainian-PC. Measured with UCKeyTranslate
+    /// against com.apple.keylayout.RussianWin: every other buffered key produces the same
+    /// letter on both, so the Ukrainian column serves as the Russian one except here.
+    static let russianOverrides: [UInt16: (unshifted: Character, shifted: Character)] = [
+        0x1E: ("ъ", "Ъ"),   // ]  — ї on Ukrainian-PC
+        0x01: ("ы", "Ы"),   // s  — і
+        0x27: ("э", "Э"),   // '  — є
+        // Shift+ё on RussianWin really prints U+00CB, Latin E with diaeresis, not the
+        // Cyrillic Ё. An Apple quirk, reproduced here because the table describes what is
+        // on screen, and DeadKeyTests holds it to the live layout.
+        0x32: ("ё", "\u{00CB}"),   // `  — ґ
+    ]
 
     struct CharPair {
         let en: Character
@@ -193,7 +208,10 @@ struct KeyMapping {
         let map = stroke.shift ? shifted : unshifted
         guard let pair = map[stroke.keycode] else { return nil }
         let base: Character
-        if language == .ukrainian, sourceID == legacyUkrainianSourceID {
+        switch language {
+        case .english:
+            base = pair.en
+        case .ukrainian where sourceID == legacyUkrainianSourceID:
             // Apple's legacy Ukrainian layout swaps И/І compared with Ukrainian-PC and
             // puts apostrophe/tilde on the backtick key. Its source ID is still simply
             // "Ukrainian", so language alone is insufficient to reconstruct the screen.
@@ -203,8 +221,18 @@ struct KeyMapping {
             case 0x32: base = stroke.shift ? "~" : "'"
             default: base = pair.ua
             }
-        } else {
-            base = language == .english ? pair.en : pair.ua
+        case .ukrainian:
+            base = pair.ua
+        case .russian where sourceID == legacyRussianSourceID && stroke.keycode == 0x32:
+            // Apple's "Russian" puts brackets on the backtick key and ё on backslash,
+            // which is not a buffered key. Measured, like the table above.
+            base = stroke.shift ? "[" : "]"
+        case .russian:
+            if let override = russianOverrides[stroke.keycode] {
+                base = stroke.shift ? override.shifted : override.unshifted
+            } else {
+                base = pair.ua
+            }
         }
 
         // Caps Lock only affects letters: ';' stays ';' but 'ж' becomes 'Ж'. Combined with
@@ -235,10 +263,24 @@ struct KeyMapping {
 enum Language: String, CaseIterable {
     case english
     case ukrainian
+    case russian
 
-    /// The only other language this app knows about — the correction target.
+    var isCyrillic: Bool { self != .english }
+
+    /// The historical correction target: Cyrillic reads back as English, English as
+    /// Ukrainian. English has two possible partners now, so anything that knows which
+    /// Cyrillic layout the user last worked in — the engine, the selection converter —
+    /// goes through `correctionTarget(cyrillic:)`. This remains for callers and tests
+    /// that predate Russian and only ever meant the Ukrainian pair.
     var opposite: Language {
-        self == .english ? .ukrainian : .english
+        isCyrillic ? .english : .ukrainian
+    }
+
+    /// Switching happens in pairs — English with one Cyrillic layout at a time. Never
+    /// Cyrillic to Cyrillic: a word typed on the wrong Cyrillic layout is not what this
+    /// app is for, and the two share so many keys that the reading would be guesswork.
+    func correctionTarget(cyrillic: Language) -> Language {
+        isCyrillic ? .english : cyrillic
     }
 
     /// Name for display, in whatever language the interface is currently set to.
@@ -248,6 +290,7 @@ enum Language: String, CaseIterable {
         switch self {
         case .english: return L("language.english")
         case .ukrainian: return L("language.ukrainian")
+        case .russian: return L("language.russian")
         }
     }
 }

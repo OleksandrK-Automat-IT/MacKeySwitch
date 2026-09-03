@@ -8,6 +8,8 @@ final class FakeEnvironment: CorrectionEnvironment {
     var layout: Language? = .english
     var sourceID: String?
     var preferredSources: [Language: String] = [:]
+    /// The Cyrillic layout English pairs with; nil means none is enabled.
+    var cyrillic: Language? = .ukrainian
     var deadKeys = InputSourceManager.DeadKeyProfile()
     var isSystemSecureInputEnabled = false
     var field: SecureFieldState = .notSecure
@@ -16,6 +18,7 @@ final class FakeEnvironment: CorrectionEnvironment {
     func currentLayout() -> Language? { layout }
     func currentSourceID() -> String? { sourceID }
     func preferredSourceID(for language: Language) -> String? { preferredSources[language] }
+    func preferredCyrillicLanguage() -> Language? { cyrillic }
     func deadKeyProfile() -> InputSourceManager.DeadKeyProfile { deadKeys }
     func secureFieldState() -> SecureFieldState { field }
     func advance(_ seconds: TimeInterval) { now = now.addingTimeInterval(seconds) }

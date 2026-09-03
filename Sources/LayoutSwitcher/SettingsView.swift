@@ -832,6 +832,9 @@ struct DictionaryTab: View {
                 if !settings.customUkrainianDictionaryPaths.contains(url.path) {
                     settings.customUkrainianDictionaryPaths.append(url.path)
                 }
+            case .russian:
+                // Russian relies on the system dictionary; there is no import for it yet.
+                break
             }
 
             importStatusMessage = L("dictionary.importedCount", count, url.lastPathComponent)

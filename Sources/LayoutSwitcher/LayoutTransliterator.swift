@@ -9,27 +9,43 @@ import Foundation
 enum LayoutTransliterator {
 
     /// Built from `KeyMapping`, so the two paths cannot drift apart: a key added there is
-    /// transliterable here for free.
-    private static let tables: (englishToUkrainian: [Character: Character],
-                                ukrainianToEnglish: [Character: Character]) = {
+    /// transliterable here for free. One table per Cyrillic layout going out; a single
+    /// table coming back, because the two Cyrillic layouts share every key they have in
+    /// common and each contributes its own letters for the rest.
+    private static let tables: (toUkrainian: [Character: Character],
+                                toRussian: [Character: Character],
+                                toEnglish: [Character: Character]) = {
         var toUkrainian: [Character: Character] = [:]
+        var toRussian: [Character: Character] = [:]
         var toEnglish: [Character: Character] = [:]
-        for map in [KeyMapping.unshifted, KeyMapping.shifted] {
-            for pair in map.values {
-                // Digits map to themselves on both layouts; keeping them out leaves them to
+        for keycode in KeyMapping.unshifted.keys {
+            for shift in [false, true] {
+                let stroke = Keystroke(keycode: keycode, shift: shift)
+                guard let en = KeyMapping.character(for: stroke, language: .english),
+                      let ua = KeyMapping.character(for: stroke, language: .ukrainian),
+                      let ru = KeyMapping.character(for: stroke, language: .russian) else { continue }
+                // Digits map to themselves on every layout; keeping them out leaves them to
                 // pass through untouched, which is the same result with less to go wrong.
-                guard pair.en != pair.ua else { continue }
-                toUkrainian[pair.en] = pair.ua
-                toEnglish[pair.ua] = pair.en
+                if en != ua { toUkrainian[en] = ua; toEnglish[ua] = en }
+                if en != ru { toRussian[en] = ru; toEnglish[ru] = en }
             }
         }
-        return (toUkrainian, toEnglish)
+        return (toUkrainian, toRussian, toEnglish)
     }()
+
+    /// Letters only one of the two Cyrillic layouts can type. What tells them apart.
+    private static let ukrainianOnly: Set<Character> = ["і", "ї", "є", "ґ"]
+    private static let russianOnly: Set<Character> = ["ы", "э", "ъ", "ё"]
 
     /// Convert `text` into `language`. Characters with no counterpart — spaces, digits,
     /// emoji — are left alone, so a whole sentence converts without losing its shape.
     static func convert(_ text: String, to language: Language) -> String {
-        let table = language == .ukrainian ? tables.englishToUkrainian : tables.ukrainianToEnglish
+        let table: [Character: Character]
+        switch language {
+        case .ukrainian: table = tables.toUkrainian
+        case .russian: table = tables.toRussian
+        case .english: table = tables.toEnglish
+        }
         return String(text.map { table[$0] ?? $0 })
     }
 
@@ -39,17 +55,28 @@ enum LayoutTransliterator {
     /// digits or brackets often enough that the first character is a poor witness. Returns
     /// nil when there is nothing to judge by, or when the two scripts are evenly matched —
     /// converting a genuinely mixed selection would corrupt half of it either way.
-    static func detectLanguage(of text: String) -> Language? {
+    ///
+    /// Cyrillic text is Ukrainian or Russian by the letters only one of them has; text
+    /// made entirely of shared letters is attributed to `preferredCyrillic`, the layout the
+    /// user last worked in. Converting to English reads the same either way.
+    static func detectLanguage(of text: String, preferredCyrillic: Language = .ukrainian) -> Language? {
         var latin = 0
         var cyrillic = 0
+        var ukrainianMarks = 0
+        var russianMarks = 0
         for character in text {
-            if tables.englishToUkrainian[character] != nil {
+            if tables.toUkrainian[character] != nil || tables.toRussian[character] != nil {
                 latin += 1
-            } else if tables.ukrainianToEnglish[character] != nil {
+            } else if tables.toEnglish[character] != nil {
                 cyrillic += 1
+                let lower = Character(character.lowercased())
+                if ukrainianOnly.contains(lower) { ukrainianMarks += 1 }
+                if russianOnly.contains(lower) { russianMarks += 1 }
             }
         }
         if latin == cyrillic { return nil }
-        return latin > cyrillic ? .english : .ukrainian
+        if latin > cyrillic { return .english }
+        if ukrainianMarks != russianMarks { return ukrainianMarks > russianMarks ? .ukrainian : .russian }
+        return preferredCyrillic.isCyrillic ? preferredCyrillic : .ukrainian
     }
 }

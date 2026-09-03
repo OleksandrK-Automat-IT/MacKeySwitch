@@ -16,7 +16,10 @@ like Punto Switcher, but native, small, and open source.
 - **Undo** — `⌃⇧Z` reverts the last correction, and the word is remembered so it is not
   touched again. When there is nothing to revert, the same key converts the last word,
   so one shortcut toggles the word either way.
-- **Two layouts** — Ukrainian and English (US, ABC, British and other Latin variants).
+- **Three layouts, switched in pairs** — English (US, ABC, British and other Latin
+  variants) with Ukrainian, and English with Russian. A Cyrillic word typed in English is
+  retyped in whichever Cyrillic layout you last used; a Cyrillic layout only ever goes back
+  to English. Ukrainian and Russian are never swapped for each other.
 - **Smart filtering** — skips password fields, URLs, emails and identifiers.
 - **App blacklist** — off by default in terminals, IDEs and code editors; any of them can be
   switched back on.

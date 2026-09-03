@@ -66,6 +66,9 @@ struct ProtoLanguage {
         switch language {
         case .english: return hasImpossibleEnglishBigram(word)
         case .ukrainian: return hasImpossibleUkrainianBigram(word)
+        // No bundled Russian corpus, so no list: the corpus is the arbiter of every pair
+        // above, and an unverified list would push correct typing toward being rewritten.
+        case .russian: return false
         }
     }
 
@@ -74,6 +77,7 @@ struct ProtoLanguage {
         switch language {
         case .english: return couldBeEnglish(word)
         case .ukrainian: return couldBeUkrainian(word)
+        case .russian: return usesScript(word, of: .russian)
         }
     }
 
@@ -110,7 +114,7 @@ struct ProtoLanguage {
         switch language {
         case .english:
             return lower.allSatisfy { $0.isASCII && $0.isLetter }
-        case .ukrainian:
+        case .ukrainian, .russian:
             // The apostrophe is part of Ukrainian orthography (м'ясо, ім'я, комп'ютер) —
             // typewriter ', right quote ', and modifier letter ʼ all occur in real text.
             // Requiring pure Cyrillic here made every apostrophized word invisible to the

@@ -87,10 +87,14 @@ enum SelectionCorrector {
                 guard let selection = selection, !selection.isEmpty else {
                     return fail(.noSelection)
                 }
-                guard let source = LayoutTransliterator.detectLanguage(of: selection) else {
+                // English pairs with the Cyrillic layout the user last worked in.
+                let cyrillic = InputSourceManager.preferredCyrillicLanguage() ?? .ukrainian
+                guard let source = LayoutTransliterator.detectLanguage(
+                    of: selection, preferredCyrillic: cyrillic
+                ) else {
                     return fail(.ambiguousLanguage)
                 }
-                let target = source.opposite
+                let target = source.correctionTarget(cyrillic: cyrillic)
                 let converted = LayoutTransliterator.convert(selection, to: target)
                 guard converted != selection else {
                     return fail(.nothingToChange)

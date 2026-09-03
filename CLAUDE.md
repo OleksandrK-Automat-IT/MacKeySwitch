@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**LayoutSwitcher** (MacKeySwitch) — automatic keyboard layout switcher for macOS, targeting Ukrainian/English bilingual users.
+**LayoutSwitcher** (MacKeySwitch) — automatic keyboard layout switcher for macOS, targeting Ukrainian/English and Russian/English bilingual users.
 
 ### What it does
 - Detects when you type a word in the wrong keyboard layout
@@ -43,7 +43,26 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
 - Password heuristic (does not touch mixed-case + digit/symbol combos)
 - Confidence-weighted detection (6 signals, 50k-word bundled dictionaries + macOS spelling dicts)
 - Two correction modes: automatic (on space) or only when asked via shortcut
-- Exact geometry support for both Apple `Ukrainian` and `Ukrainian-PC` input sources
+- Exact geometry support for Apple `Ukrainian`, `Ukrainian-PC`, `Russian` and `RussianWin`
+- Russian rides on the system dictionary alone: no bundled list, no impossible-bigram list
+  (the corpus is the arbiter of those, and there is no Russian corpus to arbitrate)
+
+### Layout pairing — read before touching `Language`
+Switching happens in **pairs**: English ↔ Ukrainian, English ↔ Russian. A Cyrillic word
+always goes back to English; an English-typed word goes to the Cyrillic layout the user
+**last worked in** (`InputSourceManager.preferredCyrillicLanguage()`, fed by every
+`currentLanguage()` read and by `switchTo`). Never Cyrillic to Cyrillic — the two share
+too many keys to tell apart, and it is not what the app is for.
+
+`Language.opposite` is the *historical* pair (Cyrillic → English, English → Ukrainian) and
+exists for tests and callers that predate Russian. Anything that decides a target must go
+through `correctionTarget(cyrillic:)` with the preferred Cyrillic layout — the engine and
+the selection converter do. `LanguageDetector.detectIntended` takes the target explicitly.
+
+The Russian key table is the Ukrainian column with four overrides (`ъ ы э ё` on the keys
+that print `ї і є ґ`), measured with `UCKeyTranslate`, and `DeadKeyTests` holds every
+recognised layout to the live one — including the Apple quirk that Shift+ё on RussianWin
+prints Latin `Ë` (U+00CB). Reproduce what the screen shows; do not "fix" the layout.
 - Selection conversion: convert any selected text, not just the word being typed
 - Password fields detected through the system, not guessed from the characters
 - URLs, emails and identifiers left alone
@@ -272,7 +291,7 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (234 tests, 27 suites)
+- [ ] Unit tests in `run-tests.sh` all pass (256 tests, 31 suites)
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Dictionary coverage tests document any gaps
 - [ ] Password heuristic tests cover edge cases

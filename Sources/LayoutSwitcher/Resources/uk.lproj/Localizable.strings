@@ -15,6 +15,7 @@
 /* Мови */
 "language.english" = "Англійська";
 "language.ukrainian" = "Українська";
+"language.russian" = "Російська";
 "language.other" = "Інша";
 "language.system" = "Системна";
 

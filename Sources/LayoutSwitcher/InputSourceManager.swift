@@ -12,6 +12,13 @@ final class InputSourceManager {
         "com.apple.keylayout.Ukrainian-PC",
     ]
 
+    /// The two ЙЦУКЕН Russian layouts Apple ships. Russian-Phonetic is a QWERTY-shaped
+    /// layout with different geometry and is deliberately absent.
+    static let russianSourceIDs: Set<String> = [
+        "com.apple.keylayout.Russian",
+        "com.apple.keylayout.RussianWin",
+    ]
+
     /// Latin layouts this app treats as "English". Matched exactly: a substring test for
     /// "US" also matches unrelated third-party layouts with "US" anywhere in their ID.
     static let englishSourceIDs: Set<String> = [
@@ -33,6 +40,11 @@ final class InputSourceManager {
     /// switch reversible.
     private static var lastUsedSourceID: [Language: String] = [:]
 
+    /// Which Cyrillic layout the user was last seen in. English pairs with this one: a
+    /// word typed in English that reads as Cyrillic is retyped in the layout the user
+    /// actually works in, not in whichever Cyrillic layout happens to be listed first.
+    private static var lastUsedCyrillic: Language?
+
     /// Returns the current input source identifier string
     static func currentInputSourceID() -> String {
         let source = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
@@ -52,6 +64,9 @@ final class InputSourceManager {
         // counted-backspace correction retype the wrong characters.
         if ukrainianSourceIDs.contains(sourceID) {
             return .ukrainian
+        }
+        if russianSourceIDs.contains(sourceID) {
+            return .russian
         }
         return nil
     }
@@ -73,12 +88,22 @@ final class InputSourceManager {
         return languages.first
     }
 
-    /// Returns the current language if it's English or Ukrainian, nil otherwise
+    /// The current language if it is one this app handles, nil otherwise.
     static func currentLanguage() -> Language? {
         let sourceID = currentInputSourceID()
         guard let language = language(ofSourceID: sourceID) else { return nil }
         lastUsedSourceID[language] = sourceID
+        if language.isCyrillic { lastUsedCyrillic = language }
         return language
+    }
+
+    /// The Cyrillic layout English corrections switch to: the one the user last worked
+    /// in, or failing that the first enabled one. Nil when none is enabled — then there is
+    /// nothing for an English word to be corrected into, and the engine leaves it alone.
+    static func preferredCyrillicLanguage() -> Language? {
+        let enabled = enabledSources().compactMap { language(ofSourceID: $0.id) }
+        if let last = lastUsedCyrillic, enabled.contains(last) { return last }
+        return enabled.first { $0.isCyrillic }
     }
 
     /// The exact source whose geometry will be used for a language switch. Correction
@@ -88,6 +113,7 @@ final class InputSourceManager {
         let current = currentInputSourceID()
         if self.language(ofSourceID: current) == language {
             lastUsedSourceID[language] = current
+            if language.isCyrillic { lastUsedCyrillic = language }
             return current
         }
         let enabled = enabledSources()
@@ -102,6 +128,7 @@ final class InputSourceManager {
     /// was last using for it.
     static func switchTo(_ language: Language) {
         let enabled = enabledSources()
+        if language.isCyrillic { lastUsedCyrillic = language }
 
         // 1. The source this user actually works in, if it is still enabled.
         if let remembered = lastUsedSourceID[language],

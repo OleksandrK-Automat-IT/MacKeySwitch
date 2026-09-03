@@ -295,7 +295,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             switch InputSourceManager.currentLanguage() {
             case .english: state = .english
             case .ukrainian: state = .ukrainian
-            case nil:
+            // Shown the way any other layout is, from its language tag — the same badge
+            // this layout had before it was corrected for.
+            case .russian, nil:
                 state = .other(Self.badge(forOtherLayout: InputSourceManager.currentSourceLanguageTag()))
             }
         }
