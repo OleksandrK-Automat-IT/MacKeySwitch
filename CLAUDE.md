@@ -10,7 +10,7 @@
 - If confident, erases the word, switches the input source, and retypes it correctly
 - Allows undo (⌃⇧Z) to reject a correction and remember not to touch that word again
 
-### Shortcuts (all rebindable in Settings, all registered through Carbon)
+### Shortcuts (all rebindable in Settings → Shortcuts, all registered through Carbon)
 | Default | Action |
 | --- | --- |
 | ⌃⇧Space | Correct the last word on demand, ignoring the confidence score |
@@ -48,8 +48,8 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
   those, and there is no Russian corpus to arbitrate): the system dictionary plus the
   imported files from the Dictionary tab are all it has (custom words added in earlier
   versions are still loaded, but the UI to add more was removed)
-- Settings → Status shows the pair *in force* — English with the last-used Cyrillic
-  layout — not a fixed "Ukrainian ↔ English"
+- The switching pair is a setting: Settings → General, and a submenu under the menu-bar
+  icon. "Automatic" follows the last-used Cyrillic layout
 
 ### Layout pairing — read before touching `Language`
 Switching happens in **pairs**: English ↔ Ukrainian, English ↔ Russian. A Cyrillic word
@@ -145,6 +145,11 @@ swift build -c release   # Release build
 ```
 
 ### Installing locally
+**The user installs; the agent does not.** Verify a change with `swift build` and
+`./run-tests.sh`, commit, and say it is ready to install. Do not run `install.sh`,
+`build_installer.sh`, or copy anything into `/Applications` — installing also relaunches
+the app under the user, which is theirs to time.
+
 ```bash
 ./install.sh --skip-permissions   # Rebuild, install, relaunch — the way to iterate
 ./install.sh                      # First install only: also walks through the privacy grants
@@ -192,7 +197,8 @@ Threshold varies by Sensitivity (Medium = 10, default).
 
 ### Dictionary Lookup Chain
 1. Bundled 50k-word lists (en_words.txt, ua_words.txt) — fast, local
-2. The user's own words and imported files (Settings → Dictionary, one column per language)
+2. Imported files (Settings → Dictionary: a language picker and one Import button) plus
+   custom words stored by earlier versions — still loaded, no longer addable in the UI
 3. macOS spelling dictionaries (system-wide) — slow but comprehensive
 
 Bundled lists alone insufficient (e.g., Ukrainian list has no words starting "при").
@@ -204,6 +210,12 @@ prefix invalid, and saying so would hand every Russian word an unearned +2.
 - Strings live in `Sources/LayoutSwitcher/Resources/<code>.lproj/Localizable.strings`
 - Non-folded `.copy` resources (app picks `.lproj` at runtime)
 - `LocalizationTests` enforces consistency (keys, format specifiers)
+- **Every view that calls `L(...)` needs `@ObservedObject private var l10n = Localization.shared`.**
+  `L` is a plain function, so nothing else tells SwiftUI to re-render it. All tabs stay
+  mounted (see the `ZStack` in `SettingsView`), so a view without the observer keeps the
+  language it first rendered in — for the life of the window. Three tabs shipped that way.
+  Nothing catches this but looking: the tables are complete, the keys resolve, the wrong
+  language is simply never redrawn
 - To add language: copy `en.lproj`, translate, add code to `AppLanguage`, update `Package.swift` and `build_app.sh`
 - Verify: `LayoutSwitcher --print-diagnostics` shows loaded tables
 
@@ -253,6 +265,16 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 - **Input Monitoring** (implicit in Accessibility on recent macOS)
 - **Login Item** (via SMAppService or `launchd`, set during install)
 - No app-level grant; all permissions require macOS System Settings + user confirmation
+
+### Settings window
+Tabs, in order: General, Detection, Per-App Rules, Dictionary, Statistics, Shortcuts,
+About (`SettingsTab`). All are mounted at once inside a `ZStack` and hidden with
+`settingsTabVisibility`, so local state survives switching — and so a missing `l10n`
+observer freezes a tab's language (see Localization).
+
+Anything with an ideal width wider than the window renders centred and clipped at both
+edges: keep tab content inside the grouped `Form` rather than a bare `VStack`, which is
+what the exceptions editor was until it was moved into one.
 
 ## Code Conventions & Patterns
 
@@ -312,7 +334,7 @@ terminal before theorising — two speculative fixes shipped here for lack of th
 | --- | --- |
 | Debug build | `swift build` |
 | Run tests | `./run-tests.sh` |
-| Rebuild and reinstall | `./install.sh --skip-permissions` |
+| Rebuild and reinstall | `./install.sh --skip-permissions` — the user's to run, not the agent's |
 | First install (with permission walkthrough) | `./install.sh` |
 | Make `.dmg` for distribution | `installer/build_installer.sh` |
 | Check localization coverage | `dist/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher --print-diagnostics` |
@@ -337,11 +359,13 @@ terminal before theorising — two speculative fixes shipped here for lack of th
    `Nothing to convert`, `Aborted: editing context changed`, or the score line for the word
 3. **Permission lost after rebuild**: Run `regrant-permissions.sh` or pin identity — and
    check it was not `./install.sh` without `--skip-permissions` that removed it
-4. **English word not corrected into Russian**: the pair is the *last-used* Cyrillic layout
-   (Settings → Status shows which). Russian must have been active at least once; and the
-   word must not be the first within 2 s of a manual layout switch
-5. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
-6. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
+4. **English word not corrected into Russian**: the pair is pinned in Settings → General,
+   or automatic — the *last-used* Cyrillic layout, which Russian must have been at least
+   once. Either way the word must not be the first within 2 s of a manual layout switch
+5. **A tab stuck in the old interface language**: it is missing the `l10n` observer — see
+   Localization above
+6. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
+7. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
 
 ## Contact & License
 
