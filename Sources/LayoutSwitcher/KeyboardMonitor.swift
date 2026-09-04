@@ -334,7 +334,7 @@ final class KeyboardMonitor {
         // moment to arrive and mark the context dirty below.
         usleep(Self.settleBeforeCorrectionUs)
 
-        // Last exit before destructive output: a fast typist may already be into the next
+        // First exit before destructive output: a fast typist may already be into the next
         // word. The backspace count was snapshotted at the boundary, so erasing now would
         // eat the fresh keystrokes. Abort — a missed correction beats mangled text.
         stateLock.lock()
@@ -351,34 +351,35 @@ final class KeyboardMonitor {
         // punctuation that several US-layout keys type for Ukrainian letters — "pfd;lb"
         // for "завжди" selected just "lb". The count is exact because every buffered
         // keystroke produces exactly one character in either layout.
-        deleteBackward(characters: plan.deleteCount)
-
-        // The one user-configurable pause, between erasing and retyping — an escape hatch
-        // for apps that fall behind on rapid synthetic input. Not needed for ordering.
-        usleep(delayUs)
-
-        // Switch input source (TIS APIs must run on the main thread). No pause after it:
-        // the retype is unicode events, which carry their characters regardless of layout.
-        DispatchQueue.main.sync {
-            self.engine.noteSelfInitiatedLayoutSwitch()
-            InputSourceManager.switchTo(plan.to)
-            self.onSelfInitiatedLayoutSwitch?()
+        let typedFully = CorrectionDelivery.execute(
+            deleteCount: plan.deleteCount, text: plan.correctText,
+            restoreSpace: plan.restoreBoundarySpace,
+            erasePause: { usleep(delayUs) }
+        ) { step in
+            // Main owns mouse/key/app invalidations. Checking and posting on that same
+            // queue prevents a processed invalidation from slipping between the two.
+            let sent = DispatchQueue.main.sync {
+                self.stateLock.lock()
+                let valid = !self._correctionContextDirty
+                self.stateLock.unlock()
+                guard valid else { return false }
+                switch step {
+                case .backspace:
+                    return self.simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
+                case .space:
+                    return self.simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
+                case .character(let character):
+                    return self.typeCharacter(character)
+                case .switchLayout:
+                    self.engine.noteSelfInitiatedLayoutSwitch()
+                    InputSourceManager.switchTo(plan.to)
+                    self.onSelfInitiatedLayoutSwitch?()
+                    return true
+                }
+            }
+            if sent { usleep(Self.interKeyGapUs) }
+            return sent
         }
-
-        let typedFully = typeString(plan.correctText)
-        if plan.restoreBoundarySpace {
-            simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
-        }
-
-        // The check above was the last exit before the first backspace; nothing stops the
-        // run after that, on purpose — halting between erasing and retyping leaves the
-        // word half gone, which is worse than either finishing or never starting. But a
-        // keystroke, click or app switch that landed *during* the run means the caret is
-        // no longer where these characters went, so an undo snapshot claiming they sit
-        // behind it would make ⌃Z erase text this app never wrote.
-        stateLock.lock()
-        let contextChangedDuringRun = _correctionContextDirty
-        stateLock.unlock()
 
         // Publish the result on main, where the engine lives. The undo snapshot is recorded
         // only when every character actually went out: undo erases `correctText.count`
@@ -386,25 +387,30 @@ final class KeyboardMonitor {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.stateLock.lock()
+            let contextIsValid = !self._correctionContextDirty
             self._isCorrecting = false
             self.stateLock.unlock()
 
-            switch kind {
-            case .correction(let automatic):
-                if typedFully && !contextChangedDuringRun {
+            CorrectionDelivery.publish(completed: typedFully,
+                                       contextIsValid: { contextIsValid }) {
+                switch kind {
+                case .correction(let automatic):
                     self.engine.correctionApplied(plan, automatic: automatic)
+                    self.settings?.recordCorrection()
+                case .undo:
+                    // Teach only a fully delivered undo in the original context.
+                    if let word = self.engine.undoApplied() {
+                        self.settings?.addException(word)
+                    }
                 }
-                self.settings?.recordCorrection()
-            case .undo:
-                // Remember the corrected form so it is left alone from now on.
-                if let word = self.engine.undoApplied() {
-                    self.settings?.addException(word)
+                if notify {
+                    self.showNotification(from: plan.from, to: plan.to, word: plan.correctText)
                 }
+            } discard: {
+                // Partial output cannot safely be undone or taught as an exception.
+                _ = self.engine.handle(.mouseDown, isCorrecting: false)
+                debugLog("[LayoutSwitcher] Delivery interrupted; discarded correction snapshot")
             }
-        }
-
-        if notify {
-            showNotification(from: plan.from, to: plan.to, word: plan.correctText)
         }
     }
 
@@ -448,56 +454,31 @@ final class KeyboardMonitor {
 
     private static let modifierReleaseTimeout: TimeInterval = 1.0
 
-    /// Press backspace exactly `characters` times.
-    private func deleteBackward(characters: Int) {
-        guard characters > 0 else { return }
-        // A miscomputed count here is destructive, and the buffer is bounded, so treat
-        // anything past that bound as a bug and refuse rather than erase the document.
-        guard characters <= CorrectionEngine.maxBufferLength + 1 else {
-            print("[LayoutSwitcher] Refusing to delete \(characters) characters — count out of range")
-            return
-        }
-        for _ in 0..<characters {
-            simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
-        }
-    }
-
-    private func simulateKey(keycode: UInt16, flags: CGEventFlags) {
+    private func simulateKey(keycode: UInt16, flags: CGEventFlags) -> Bool {
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keycode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keycode, keyDown: false) else {
-            return
+            return false
         }
         keyDown.flags = flags
         keyUp.flags = flags
         post(keyDown)
         post(keyUp)
-        usleep(Self.interKeyGapUs)
+        return true
     }
 
-    /// Types the text with synthetic unicode key events. Returns false if any character
-    /// could not be posted — the caller must then not record an undo snapshot, because
-    /// the on-screen text is shorter than the snapshot would claim.
-    @discardableResult
-    private func typeString(_ text: String) -> Bool {
-        var complete = true
-        for char in text {
-            let str = String(char)
-            guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else {
-                print("[LayoutSwitcher] WARNING: CGEvent allocation failed; typed text is incomplete")
-                complete = false
-                continue
-            }
-            let utf16 = Array(str.utf16)
-            event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-            event.flags = []
-            post(event)
-            if let upEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false) {
-                upEvent.flags = []
-                post(upEvent)
-            }
-            usleep(Self.interKeyGapUs)
-        }
-        return complete
+    /// Allocate both halves before posting, so allocation failure leaves no held key.
+    private func typeCharacter(_ char: Character) -> Bool {
+        let str = String(char)
+        guard let event = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
+              let upEvent = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)
+        else { return false }
+        let utf16 = Array(str.utf16)
+        event.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+        event.flags = []
+        post(event)
+        upEvent.flags = []
+        post(upEvent)
+        return true
     }
 
     private func showNotification(from: Language, to: Language, word: String) {

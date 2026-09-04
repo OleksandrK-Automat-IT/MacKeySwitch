@@ -194,10 +194,14 @@ unit-tested, so it gets a comment saying what was measured.
 **What invalidates a queued plan** (`markCorrectionContextDirty`): a real keystroke, an app
 switch, and a mouse click — all three move the caret away from where the plan's backspaces
 would land. The click was missing until a review found it; a shortcut-driven plan waits up
-to a second for modifiers, plenty of time to click elsewhere. The check runs once, before
-the first backspace, and deliberately not after: stopping between erasing and retyping
-leaves the word half gone. But if the context goes dirty *during* the run, no undo
-snapshot is recorded — ⌃Z would otherwise erase text this app never wrote.
+to a second for modifiers, plenty of time to click elsewhere. `CorrectionDelivery` checks
+before each backspace, character, space and layout switch. Checking and posting happen
+together on main; pauses stay on the correction queue. Interrupted delivery stops immediately
+and discards its snapshot: the original word may be partially erased, but continuing into
+another field would damage unrelated text. Events already posted cannot be recalled.
+Publication checks validity again on main, together with releasing the active slot, so a
+click between delivery and completion cannot recreate a stale undo snapshot. Partial output
+does not count toward statistics, trigger a notification, or teach an undo exception.
 
 ### Detection Confidence Scoring (LanguageDetector)
 Signal-weighted system:
@@ -385,7 +389,7 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (280 tests, 38 suites) — run it more than
+- [ ] Unit tests in `run-tests.sh` all pass (285 tests, 39 suites) — run it more than
       once when a suite touching TIS was added; the crash is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary
