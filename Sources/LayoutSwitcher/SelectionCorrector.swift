@@ -19,6 +19,9 @@ enum SelectionCorrector {
         case secureInput
         case contextChanged
         case alreadyRunning
+        /// The shortcut's own modifiers never came up. Pasting through them would send
+        /// ⌃⇧⌘V, not Paste — the fault the wait exists to prevent.
+        case modifiersHeld
         /// The selection is not recognisably one layout, so converting it would corrupt
         /// whichever half is already right.
         case ambiguousLanguage
@@ -69,7 +72,7 @@ enum SelectionCorrector {
             completion(result)
         }
 
-        whenModifiersAreReleased {
+        whenModifiersAreReleased(onTimeout: { complete(.failure(.modifiersHeld)) }) {
             guard contextMatches(originalContext),
                   SecureInputDetector.current() == .notSecure else {
                 complete(.failure(.contextChanged))
@@ -266,18 +269,23 @@ enum SelectionCorrector {
     ///
     /// Polling rather than blocking: this runs in the hotkey handler on the main thread,
     /// and sleeping there freezes the UI of every app waiting on it. Gives up after
-    /// `modifierReleaseTimeout` and proceeds anyway.
-    private static func whenModifiersAreReleased(_ work: @escaping () -> Void) {
+    /// `modifierReleaseTimeout` — and gives up means `onTimeout`, not `work`: running the
+    /// paste with the keys still down is the fault this wait exists to prevent.
+    private static func whenModifiersAreReleased(
+        onTimeout: @escaping () -> Void, _ work: @escaping () -> Void
+    ) {
         let deadline = Date().addingTimeInterval(modifierReleaseTimeout)
         let held: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
 
         func poll() {
             let flags = CGEventSource.flagsState(.combinedSessionState)
-            if flags.intersection(held).isEmpty || Date() >= deadline {
+            if flags.intersection(held).isEmpty {
                 work()
-                return
+            } else if Date() >= deadline {
+                onTimeout()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { poll() }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { poll() }
         }
         poll()
     }

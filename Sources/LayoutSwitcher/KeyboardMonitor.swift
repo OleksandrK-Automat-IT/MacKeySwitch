@@ -220,6 +220,11 @@ final class KeyboardMonitor {
         }
 
         if type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            // A click moves the caret without a keystroke, exactly as an app switch does,
+            // and a queued plan would erase whatever now sits under it. Keystrokes and app
+            // switches already invalidated the plan; a click did not — and a shortcut-driven
+            // plan waits up to a second for modifiers to come up, plenty of time to click.
+            markCorrectionContextDirty()
             _ = engine.handle(.mouseDown, isCorrecting: isCorrecting)
             return
         }
@@ -316,8 +321,13 @@ final class KeyboardMonitor {
         // control chords, so the word vanished and nothing replaced it. Wait for the keys
         // to come up. Nothing marks the context dirty in the meantime — the tap does not
         // watch modifier changes — so the plan is still valid afterwards.
-        if kind != .correction(automatic: true) {
-            waitForModifierRelease()
+        if kind != .correction(automatic: true), !waitForModifierRelease() {
+            // Still held after the whole wait. Going ahead is precisely the fault this
+            // wait exists to prevent — ⌃Backspace instead of Backspace — and a plan not
+            // run is a missed correction, which beats a mangled one.
+            stateLock.lock(); _isCorrecting = false; stateLock.unlock()
+            debugLog("[LayoutSwitcher] Aborted: modifiers still held")
+            return
         }
 
         // Let the triggering key reach the app, and give a fast typist's next keystroke a
@@ -360,6 +370,16 @@ final class KeyboardMonitor {
             simulateKey(keycode: KeyMapping.spaceKeycode, flags: [])
         }
 
+        // The check above was the last exit before the first backspace; nothing stops the
+        // run after that, on purpose — halting between erasing and retyping leaves the
+        // word half gone, which is worse than either finishing or never starting. But a
+        // keystroke, click or app switch that landed *during* the run means the caret is
+        // no longer where these characters went, so an undo snapshot claiming they sit
+        // behind it would make ⌃Z erase text this app never wrote.
+        stateLock.lock()
+        let contextChangedDuringRun = _correctionContextDirty
+        stateLock.unlock()
+
         // Publish the result on main, where the engine lives. The undo snapshot is recorded
         // only when every character actually went out: undo erases `correctText.count`
         // characters, and a snapshot longer than what was typed would erase preceding text.
@@ -371,7 +391,9 @@ final class KeyboardMonitor {
 
             switch kind {
             case .correction(let automatic):
-                if typedFully { self.engine.correctionApplied(plan, automatic: automatic) }
+                if typedFully && !contextChangedDuringRun {
+                    self.engine.correctionApplied(plan, automatic: automatic)
+                }
                 self.settings?.recordCorrection()
             case .undo:
                 // Remember the corrected form so it is left alone from now on.
@@ -409,15 +431,19 @@ final class KeyboardMonitor {
         event.post(tap: .cgAnnotatedSessionEventTap)
     }
 
-    /// Blocks the correction queue until no modifier key is held, or `modifierReleaseTimeout`
-    /// passes — a stuck key must not stall corrections forever.
-    private func waitForModifierRelease() {
+    /// Blocks the correction queue until no modifier key is held. Returns false if one is
+    /// still down when `modifierReleaseTimeout` passes — a stuck key must not stall
+    /// corrections forever, but it must not be typed through either.
+    private func waitForModifierRelease() -> Bool {
         let held: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
         let deadline = Date().addingTimeInterval(Self.modifierReleaseTimeout)
-        while Date() < deadline,
-              !CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty {
+        while Date() < deadline {
+            if CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty {
+                return true
+            }
             usleep(5_000)
         }
+        return CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty
     }
 
     private static let modifierReleaseTimeout: TimeInterval = 1.0

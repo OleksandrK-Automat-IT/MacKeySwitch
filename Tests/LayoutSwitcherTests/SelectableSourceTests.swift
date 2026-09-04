@@ -4,7 +4,11 @@ import Carbon
 
 /// The menu offers exactly the layouts already added in System Settings — no more, and
 /// nothing that is not a layout.
-@Suite struct SelectableSourceTests {
+///
+/// `@MainActor` is load-bearing, not decoration: HIToolbox aborts the whole process when
+/// TIS is entered from two threads at once, and swift-testing runs suites in parallel.
+/// Without it the run died with SIGABRT about one time in three.
+@Suite @MainActor struct SelectableSourceTests {
 
     @Test func itListsTheLayoutsTheSystemHasEnabled() {
         let sources = InputSourceManager.selectableKeyboardSources()
