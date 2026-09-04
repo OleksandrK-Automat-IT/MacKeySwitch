@@ -5,7 +5,6 @@
 /* Рядок меню */
 "menu.enabled" = "Увімкнено";
 "menu.undo" = "Скасувати останню заміну";
-"menu.currentLayout" = "Поточна: %@";
 "menu.corrections" = "Виправлень: %d";
 "menu.correctionsWithTotal" = "Виправлень: %1$d (усього: %2$d)";
 "menu.pair" = "Пара перемикання";

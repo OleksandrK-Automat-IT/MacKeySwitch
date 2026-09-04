@@ -5,7 +5,6 @@
 /* Menu bar */
 "menu.enabled" = "Enabled";
 "menu.undo" = "Undo Last Switch";
-"menu.currentLayout" = "Current: %@";
 "menu.corrections" = "Corrections: %d";
 "menu.correctionsWithTotal" = "Corrections: %1$d (total: %2$d)";
 "menu.pair" = "Switching Pair";

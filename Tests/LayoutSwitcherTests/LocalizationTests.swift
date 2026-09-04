@@ -79,7 +79,7 @@ import Foundation
         // Guards the opposite drift: a key renamed in code but not in the tables would show
         // up as a raw "some.dotted.key" in the UI.
         let used = [
-            "menu.enabled", "menu.undo", "menu.currentLayout", "menu.corrections",
+            "menu.enabled", "menu.undo", "menu.corrections",
             "menu.correctionsWithTotal", "menu.settings", "menu.quit", "window.settings",
             "language.english", "language.ukrainian", "language.other", "language.system",
             "tab.general", "tab.detection", "tab.perApp", "tab.dictionary",

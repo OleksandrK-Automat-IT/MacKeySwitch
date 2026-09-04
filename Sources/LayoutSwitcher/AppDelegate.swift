@@ -28,6 +28,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let monitor = KeyboardMonitor()
     private var settingsWindow: NSWindow?
+    /// Where the layout list starts in the menu. Everything at or past `layoutTagBase` is
+    /// one of those items, so the section can be replaced without disturbing the rest.
+    private var layoutSectionAnchor = 0
+    private static let layoutTagBase = 200
+    /// The rule below the list. Tagged so it is removed with the items it follows —
+    /// untagged, a fresh one was added on every open and they piled up.
+    private static let layoutSeparatorTag = 199_999
     private let settings = SettingsModel.shared
     private var accessibilityTimer: Timer?
     /// Backstop for the menu-bar flag. The distributed layout notification is the primary
@@ -610,14 +617,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let currentLayout = NSMenuItem(
-            title: L("menu.currentLayout", LayoutFlag.currentLayoutDisplayName),
-            action: nil,
-            keyEquivalent: ""
-        )
-        currentLayout.tag = 100
-        currentLayout.isEnabled = false
-        menu.addItem(currentLayout)
+        // The layouts themselves go here, rebuilt on every open — see menuNeedsUpdate.
+        // No separate "current layout" line: the tick beside the active one says it.
+        layoutSectionAnchor = menu.numberOfItems
 
         // The pair as a submenu, mirroring the picker in Settings → General.
         let pairItem = NSMenuItem(title: L("menu.pair"), action: nil, keyEquivalent: "")
@@ -669,6 +671,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func undoSwitch() {
         monitor.undoLastCorrection()
+    }
+
+    /// Rebuild the list of layouts. The set changes in System Settings without telling
+    /// this app, so it is read fresh rather than cached.
+    private func rebuildLayoutItems(in menu: NSMenu) {
+        for item in menu.items
+        where item.tag >= Self.layoutTagBase || item.tag == Self.layoutSeparatorTag {
+            menu.removeItem(item)
+        }
+        let current = InputSourceManager.currentInputSourceID()
+        var index = layoutSectionAnchor
+        for (offset, source) in InputSourceManager.selectableKeyboardSources().enumerated() {
+            let item = NSMenuItem(
+                title: source.name,
+                action: #selector(selectLayout(_:)),
+                keyEquivalent: ""
+            )
+            item.tag = Self.layoutTagBase + offset
+            item.target = self
+            item.representedObject = source.id
+            item.state = source.id == current ? .on : .off
+            menu.insertItem(item, at: index)
+            index += 1
+        }
+        if index > layoutSectionAnchor {
+            let rule = NSMenuItem.separator()
+            rule.tag = Self.layoutSeparatorTag
+            menu.insertItem(rule, at: index)
+        }
+    }
+
+    @objc private func selectLayout(_ sender: NSMenuItem) {
+        guard let sourceID = sender.representedObject as? String else { return }
+        InputSourceManager.select(sourceID: sourceID)
+        updateLayoutIcon()
     }
 
     @objc private func selectPair(_ sender: NSMenuItem) {
@@ -737,11 +774,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 extension AppDelegate: NSMenuDelegate {
+    /// Called before the menu is shown, and the sanctioned place to change its items —
+    /// unlike `menuWillOpen`, which runs once the menu is already on screen.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        // Only the menu the layout section belongs to. A submenu with this delegate would
+        // otherwise have the whole list spliced into it.
+        guard menu === statusItem?.menu else { return }
+        rebuildLayoutItems(in: menu)
+    }
+
     func menuWillOpen(_ menu: NSMenu) {
         enableMenuItem?.state = settings.isEnabled ? .on : .off
-        if let layoutItem = menu.item(withTag: 100) {
-            layoutItem.title = L("menu.currentLayout", LayoutFlag.currentLayoutDisplayName)
-        }
         if let statsItem = menu.item(withTag: 101) {
             statsItem.title = L("menu.correctionsWithTotal", settings.sessionCorrections, settings.totalCorrections)
         }

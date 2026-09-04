@@ -265,6 +265,51 @@ final class InputSourceManager {
         }
     }
 
+    /// One layout the user can switch to, as the menu shows it.
+    struct SelectableSource: Equatable {
+        let id: String
+        let name: String
+    }
+
+    /// The layouts already added in System Settings, in the system's own order — the same
+    /// set the menu-bar input menu offers, and nothing else. Palettes (Emoji & Symbols,
+    /// the character viewer) share the input-source list but are not layouts, so they are
+    /// filtered out by category; anything not select-capable is dropped for the same
+    /// reason the system does not offer it.
+    static func selectableKeyboardSources() -> [SelectableSource] {
+        enabledSources().compactMap { entry in
+            guard isKeyboardCategory(entry.source), isSelectCapable(entry.source) else {
+                return nil
+            }
+            guard let namePtr = TISGetInputSourceProperty(entry.source, kTISPropertyLocalizedName)
+            else { return nil }
+            let name = Unmanaged<CFString>.fromOpaque(namePtr).takeUnretainedValue() as String
+            guard !name.isEmpty else { return nil }
+            return SelectableSource(id: entry.id, name: name)
+        }
+    }
+
+    /// Switch to one source by ID. Nothing is remembered here on purpose: choosing a
+    /// layout by hand is a manual switch like any other, and the corrector should treat
+    /// the next word as the user's deliberate choice rather than something to second-guess.
+    static func select(sourceID: String) {
+        guard let entry = enabledSources().first(where: { $0.id == sourceID }) else { return }
+        TISSelectInputSource(entry.source)
+    }
+
+    private static func isKeyboardCategory(_ source: TISInputSource) -> Bool {
+        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceCategory)
+        else { return false }
+        let category = Unmanaged<CFString>.fromOpaque(ptr).takeUnretainedValue() as String
+        return category == (kTISCategoryKeyboardInputSource as String)
+    }
+
+    private static func isSelectCapable(_ source: TISInputSource) -> Bool {
+        guard let ptr = TISGetInputSourceProperty(source, kTISPropertyInputSourceIsSelectCapable)
+        else { return false }
+        return CFBooleanGetValue(Unmanaged<CFBoolean>.fromOpaque(ptr).takeUnretainedValue())
+    }
+
     /// Enabled (not merely installed) keyboard input sources, with their IDs.
     private static func enabledSources() -> [(source: TISInputSource, id: String)] {
         guard let sources = TISCreateInputSourceList(nil, false)?.takeRetainedValue()
