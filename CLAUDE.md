@@ -49,6 +49,11 @@ duplicate combination silently, so a clash would ship as a shortcut that never f
   signal simply never fires for it
 - The switching pair is a setting: Settings → General, and a submenu under the menu-bar
   icon. "Automatic" follows the last-used Cyrillic layout
+- The menu-bar icon lists every layout enabled in System Settings — read fresh on each
+  open via `menuNeedsUpdate`, filtered to select-capable keyboard sources so palettes
+  (Emoji & Symbols) stay out — and switches on click. No cycling shortcut of its own: that
+  stays the system's. Choosing here is a *manual* switch on purpose (not marked
+  self-initiated), so the next word is left alone rather than second-guessed
 
 ### Layout pairing — read before touching `Language`
 Switching happens in **pairs**: English ↔ Ukrainian, English ↔ Russian. A Cyrillic word
@@ -186,6 +191,14 @@ plans without deciding anything. A bug in behaviour belongs in the engine and ge
 a bug in delivery (ordering, modifiers, timing) belongs in the monitor and usually cannot be
 unit-tested, so it gets a comment saying what was measured.
 
+**What invalidates a queued plan** (`markCorrectionContextDirty`): a real keystroke, an app
+switch, and a mouse click — all three move the caret away from where the plan's backspaces
+would land. The click was missing until a review found it; a shortcut-driven plan waits up
+to a second for modifiers, plenty of time to click elsewhere. The check runs once, before
+the first backspace, and deliberately not after: stopping between erasing and retyping
+leaves the word half gone. But if the context goes dirty *during* the run, no undo
+snapshot is recorded — ⌃Z would otherwise erase text this app never wrote.
+
 ### Detection Confidence Scoring (LanguageDetector)
 Signal-weighted system:
 - **+14**: Other-layout reading is a real word
@@ -298,6 +311,12 @@ what the exceptions editor was until it was moved into one.
 - Carbon/Cocoa APIs (keystroke capture, InputSourceManager) require main thread
 - Use DispatchQueue.main for UI updates and OS callbacks
 - Check: Async/await in Detection vs sync Main-thread calls
+- **TIS from two threads at once does two things, and the second is worse.** HIToolbox
+  aborts the process (SIGABRT, about one run in three) — visible. But before it aborts, a
+  concurrent call can hand the *other* thread the wrong layout's data — invisible. That is
+  how `DeadKeyTests` "found" an ISO-keyboard bug in the Russian table that did not exist:
+  a new test suite without `@MainActor` was racing it. An hour went into the phantom.
+  If layout data ever looks wrong, check for an off-main TIS caller before believing it.
 
 ### Memory & Lifecycle
 - Keep Carbon hot keys alive (strong reference in CarbonHotkey)
@@ -306,6 +325,10 @@ what the exceptions editor was until it was moved into one.
 
 ### Testing
 - Use `TestSupport.swift` for common fixtures (mock dicts, test strings)
+- **Any suite that touches TIS or Carbon is `@Suite @MainActor`.** swift-testing runs
+  suites in parallel; see Threading above for what happens otherwise. `DeadKeyTests`,
+  `SelectionCorrectorTests`, `SelectableSourceTests`, `ApplicationPickerTests`,
+  `SettingsWindowTests` are the pattern to copy
 - A modifier chord reaches the tap **before** the Carbon hotkey fires, so the engine must
   keep the word alive across it — both the finished word and the one still being typed.
   Clearing it there is what made the on-demand shortcut find nothing, twice
@@ -341,8 +364,10 @@ what the exceptions editor was until it was moved into one.
    as ⌃Backspace and the replacement letters as control chords — the word vanished and
    nothing replaced it — and the paste arrived as ⌃⇧⌘V. Both the selection converter and
    the monitor's shortcut-driven plans wait, up to a second so a stuck key cannot stall
-   them, and typed events are posted with empty flags. Automatic corrections do not wait:
-   space carries no modifier, and the wait would cost them their speed
+   them, and typed events are posted with empty flags. **If the keys are still down when
+   the second is up, the plan is abandoned** — running it anyway was the very fault the
+   wait exists to prevent, and a missed correction beats a mangled one. Automatic
+   corrections do not wait: space carries no modifier, and the wait would cost them speed
 
 ## Common Tasks & Commands
 
@@ -360,7 +385,8 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (272 tests, 35 suites)
+- [ ] Unit tests in `run-tests.sh` all pass (280 tests, 38 suites) — run it more than
+      once when a suite touching TIS was added; the crash is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary
 - [ ] Password heuristic tests cover edge cases
@@ -380,8 +406,12 @@ what the exceptions editor was until it was moved into one.
    once. Either way the word must not be the first within 2 s of a manual layout switch
 5. **A tab stuck in the old interface language**: it is missing the `l10n` observer — see
    Localization above
-6. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
-7. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
+6. **`DeadKeyTests` fails, or a layout's key table looks wrong**: before touching any table,
+   look for a test suite calling TIS without `@MainActor`. Concurrent TIS returns another
+   layout's data; the table was right all along. Run the suite several times — the abort
+   is intermittent and the corrupted read more so
+7. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
+8. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
 
 ## Contact & License
 
