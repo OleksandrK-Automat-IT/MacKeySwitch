@@ -82,6 +82,7 @@
 "perApp.addRunningHelp" = "Оберіть запущену програму, щоб додати до списку";
 "perApp.addRunningEmpty" = "Усі запущені програми вже у списку";
 "perApp.addFromFinder" = "Додати з Finder…";
+"perApp.addPrompt" = "Додати";
 "perApp.removeAll" = "Видалити всі";
 "perApp.removeHelp" = "Видалити «%@» зі списку";
 

@@ -87,6 +87,7 @@ import Foundation
             "general.pair", "pair.automatic", "menu.pair", "dictionary.importLanguage",
             "exceptions.search", "exceptions.noMatches", "exceptions.editHelp",
             "exceptions.clearConfirm", "stats.resetConfirm", "dictionary.cancel",
+            "perApp.addPrompt", "perApp.addFromFinder",
             "dictionary.wordCount", "dictionary.detected", "dictionary.ambiguous",
             "dictionary.noneForLanguage", "dictionary.skipped", "dictionary.addFile",
             "hotkey.disabled", "hotkey.label", "hotkey.recording", "hotkey.hint",

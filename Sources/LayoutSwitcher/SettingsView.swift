@@ -413,7 +413,6 @@ struct DetectionTab: View {
 struct PerAppTab: View {
     @ObservedObject var settings: SettingsModel
     @ObservedObject private var l10n = Localization.shared
-    @State private var showingAppPicker = false
     /// Refreshed when the tab appears and whenever an app launches or quits, so the popup
     /// never offers something that is no longer running.
     @State private var runningApps: [RunningApp] = []
@@ -508,7 +507,7 @@ struct PerAppTab: View {
                         : "perApp.addRunningHelp"))
 
                 Button(L("perApp.addFromFinder")) {
-                    showingAppPicker = true
+                    presentApplicationPicker()
                 }
 
                 Spacer()
@@ -529,14 +528,30 @@ struct PerAppTab: View {
             .publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in
                 refreshRunningApps()
             }
-        .fileImporter(
-            isPresented: $showingAppPicker,
-            allowedContentTypes: [.application],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                addAppFromURL(url)
-            }
+    }
+
+    /// Applications are what this button is for, so the panel starts where they live
+    /// rather than wherever a file dialog was last used.
+    ///
+    /// `NSOpenPanel` rather than SwiftUI's `fileImporter`: the modifier's default-directory
+    /// counterpart is macOS 14, and this app supports 13.
+    static func applicationPicker() -> NSOpenPanel {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.application]
+        panel.allowsMultipleSelection = false
+        panel.canChooseFiles = true
+        // An .app is a package: chosen as a file, not entered as a folder.
+        panel.canChooseDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: "/Applications")
+        panel.prompt = L("perApp.addPrompt")
+        return panel
+    }
+
+    private func presentApplicationPicker() {
+        let panel = Self.applicationPicker()
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            addAppFromURL(url)
         }
     }
 

@@ -82,6 +82,7 @@
 "perApp.addRunningHelp" = "Pick a running app to add to the list";
 "perApp.addRunningEmpty" = "Every running app is already in the list";
 "perApp.addFromFinder" = "Add App from Finder...";
+"perApp.addPrompt" = "Add";
 "perApp.removeAll" = "Remove All";
 "perApp.removeHelp" = "Remove %@ from the list";
 
