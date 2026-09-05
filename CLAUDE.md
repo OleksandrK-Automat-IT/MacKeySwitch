@@ -202,6 +202,14 @@ another field would damage unrelated text. Events already posted cannot be recal
 Publication checks validity again on main, together with releasing the active slot, so a
 click between delivery and completion cannot recreate a stale undo snapshot. Partial output
 does not count toward statistics, trigger a notification, or teach an undo exception.
+`CorrectionOperation` owns the active/valid state and atomically consumes it at completion;
+tests enqueue invalidation before publication on main against this same production state.
+Each output step also checks the live Control/Shift/Option/Command flags; a modifier newly
+pressed during delivery aborts the remainder. Caps Lock is not a command modifier.
+Selection conversion uses the same operation state: real key presses, clicks and app switches
+invalidate it. Its AX context includes the selected range when available, and it checks
+modifier release again immediately before paste. Editors without AX range support rely on
+the input-event invalidations; already posted OS events cannot be recalled.
 
 ### Detection Confidence Scoring (LanguageDetector)
 Signal-weighted system:
@@ -389,7 +397,7 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (285 tests, 39 suites) — run it more than
+- [ ] Unit tests in `run-tests.sh` all pass (286 tests, 39 suites) — run it more than
       once when a suite touching TIS was added; the crash is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary

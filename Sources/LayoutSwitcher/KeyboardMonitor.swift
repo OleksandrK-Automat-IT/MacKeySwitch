@@ -39,21 +39,13 @@ final class KeyboardMonitor {
     /// Serial queue for typing out plans.
     private let correctionQueue = DispatchQueue(label: "com.layoutswitcher.correction")
 
-    /// Guards the two flags shared between the main thread and `correctionQueue`.
-    private let stateLock = NSLock()
+    /// Shared lifecycle of delivery, invalidation and publication.
+    private let operation = CorrectionOperation()
 
-    /// True while a plan is being typed. Written on `correctionQueue`, read on the main
-    /// thread, so every access goes through the lock. NSLock is not recursive.
-    private var _isCorrecting: Bool = false
+    /// True until delivery is abandoned or its result is published on main.
     private var isCorrecting: Bool {
-        get { stateLock.lock(); defer { stateLock.unlock() }; return _isCorrecting }
+        operation.isActive
     }
-
-    /// Set when anything invalidates a plan after it was claimed but before its backspaces
-    /// went out: a real keystroke, or a switch to another app. The snapshot of "text behind
-    /// the caret" is stale then, and the backspaces would land on text the plan does not
-    /// describe — in another app's window, in the worst case. The plan aborts instead.
-    private var _correctionContextDirty: Bool = false
 
     /// Re-enables a tap the window server disabled (timeout, or Accessibility revoked and
     /// re-granted). A one-shot re-enable inside the callback cannot recover from the
@@ -196,6 +188,7 @@ final class KeyboardMonitor {
     }
 
     func frontmostAppDidChange(bundleID: String?) {
+        SelectionCorrector.invalidatePendingSelection()
         // A queued plan was made against the previous app's caret. No keystroke
         // accompanies an app switch, so without this the backspaces would be delivered to
         // whatever the user just switched to.
@@ -204,14 +197,16 @@ final class KeyboardMonitor {
     }
 
     private func markCorrectionContextDirty() {
-        stateLock.lock()
-        if _isCorrecting { _correctionContextDirty = true }
-        stateLock.unlock()
+        operation.invalidate()
     }
 
     // MARK: - Event decoding
 
     func handleEvent(type: CGEventType, event: CGEvent) {
+        if event.getIntegerValueField(.eventSourceUserData) != Self.syntheticEventMarker,
+           type == .keyDown || type == .leftMouseDown || type == .rightMouseDown || type == .otherMouseDown {
+            SelectionCorrector.invalidatePendingSelection()
+        }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap {
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -296,10 +291,7 @@ final class KeyboardMonitor {
     private func run(_ plan: CorrectionPlan, kind: PlanKind) {
         // Claim the slot before leaving the main thread, so a second word boundary that
         // arrives while this plan is queued cannot start a second one.
-        stateLock.lock()
-        _isCorrecting = true
-        _correctionContextDirty = false
-        stateLock.unlock()
+        operation.begin()
 
         let delayMs = Self.eraseToRetypeGapMs
         let notify = kind == .correction(automatic: true) && (settings?.showNotifications ?? false)
@@ -325,7 +317,7 @@ final class KeyboardMonitor {
             // Still held after the whole wait. Going ahead is precisely the fault this
             // wait exists to prevent — ⌃Backspace instead of Backspace — and a plan not
             // run is a missed correction, which beats a mangled one.
-            stateLock.lock(); _isCorrecting = false; stateLock.unlock()
+            operation.finish(completed: false)
             debugLog("[LayoutSwitcher] Aborted: modifiers still held")
             return
         }
@@ -337,11 +329,8 @@ final class KeyboardMonitor {
         // First exit before destructive output: a fast typist may already be into the next
         // word. The backspace count was snapshotted at the boundary, so erasing now would
         // eat the fresh keystrokes. Abort — a missed correction beats mangled text.
-        stateLock.lock()
-        let dirty = _correctionContextDirty
-        if dirty { _isCorrecting = false }
-        stateLock.unlock()
-        if dirty {
+        if !operation.canContinue {
+            operation.finish(completed: false)
             debugLog("[LayoutSwitcher] Aborted: editing context changed")
             return
         }
@@ -359,10 +348,11 @@ final class KeyboardMonitor {
             // Main owns mouse/key/app invalidations. Checking and posting on that same
             // queue prevents a processed invalidation from slipping between the two.
             let sent = DispatchQueue.main.sync {
-                self.stateLock.lock()
-                let valid = !self._correctionContextDirty
-                self.stateLock.unlock()
-                guard valid else { return false }
+                guard self.operation.canContinue else { return false }
+                guard Self.modifiersAreReleased else {
+                    self.operation.invalidate()
+                    return false
+                }
                 switch step {
                 case .backspace:
                     return self.simulateKey(keycode: KeyMapping.backspaceKeycode, flags: [])
@@ -386,13 +376,7 @@ final class KeyboardMonitor {
         // characters, and a snapshot longer than what was typed would erase preceding text.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.stateLock.lock()
-            let contextIsValid = !self._correctionContextDirty
-            self._isCorrecting = false
-            self.stateLock.unlock()
-
-            CorrectionDelivery.publish(completed: typedFully,
-                                       contextIsValid: { contextIsValid }) {
+            if self.operation.finish(completed: typedFully) {
                 switch kind {
                 case .correction(let automatic):
                     self.engine.correctionApplied(plan, automatic: automatic)
@@ -406,7 +390,7 @@ final class KeyboardMonitor {
                 if notify {
                     self.showNotification(from: plan.from, to: plan.to, word: plan.correctText)
                 }
-            } discard: {
+            } else {
                 // Partial output cannot safely be undone or taught as an exception.
                 _ = self.engine.handle(.mouseDown, isCorrecting: false)
                 debugLog("[LayoutSwitcher] Delivery interrupted; discarded correction snapshot")
@@ -453,6 +437,11 @@ final class KeyboardMonitor {
     }
 
     private static let modifierReleaseTimeout: TimeInterval = 1.0
+
+    static var modifiersAreReleased: Bool {
+        let held: CGEventFlags = [.maskControl, .maskShift, .maskAlternate, .maskCommand]
+        return CGEventSource.flagsState(.combinedSessionState).intersection(held).isEmpty
+    }
 
     private func simulateKey(keycode: UInt16, flags: CGEventFlags) -> Bool {
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keycode, keyDown: true),

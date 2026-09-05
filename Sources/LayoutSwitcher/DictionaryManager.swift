@@ -131,9 +131,9 @@ final class DictionaryManager: WordSource {
         en += customEnglishWords.map { $0.lowercased() }
         ua += customUkrainianWords.map { $0.lowercased() }
         ru += customRussianWords.map { $0.lowercased() }
-        for path in englishPaths { en += Self.readFile(path).map(Self.parseWordList) ?? [] }
-        for path in ukrainianPaths { ua += Self.readFile(path).map(Self.parseWordList) ?? [] }
-        for path in russianPaths { ru += Self.readFile(path).map(Self.parseWordList) ?? [] }
+        for path in englishPaths { en += Self.importedWords(path, language: .english) }
+        for path in ukrainianPaths { ua += Self.importedWords(path, language: .ukrainian) }
+        for path in russianPaths { ru += Self.importedWords(path, language: .russian) }
 
         let enIndex = Self.index(en)
         let uaIndex = Self.index(ua)
@@ -160,6 +160,15 @@ final class DictionaryManager: WordSource {
         let content = try? String(contentsOf: URL(fileURLWithPath: path), encoding: .utf8)
         if content == nil { print("[LayoutSwitcher] ERROR: Could not read dictionary file: \(path)") }
         return content
+    }
+
+    private static func importedWords(_ path: String, language: Language) -> [String] {
+        guard let content = readFile(path) else { return [] }
+        return validatedWords(content, language: language)
+    }
+
+    private static func validatedWords(_ content: String, language: Language) -> [String] {
+        parseWordList(content).filter { isValidImportedWord($0, language: language) }
     }
 
     private func loadBundledDictionaries() {
@@ -398,9 +407,7 @@ final class DictionaryManager: WordSource {
         // A Hunspell/TSV/frequency file is still plain text, but its complete rows are not
         // words and would never match typed input. Silently accepting them made the UI say
         // an import succeeded while adding nothing useful to detection.
-        let words = Self.parseWordList(content).filter {
-            Self.isValidImportedWord($0, language: language)
-        }
+        let words = Self.validatedWords(content, language: language)
         let index = Self.index(words)
 
         lock.lock()

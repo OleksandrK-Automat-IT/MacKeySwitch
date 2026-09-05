@@ -28,9 +28,4 @@ enum CorrectionDelivery {
         return true
     }
 
-    /// Must be called when publishing on main, not when queuing the publication.
-    static func publish(completed: Bool, contextIsValid: () -> Bool,
-                        success: () -> Void, discard: () -> Void) {
-        if completed && contextIsValid() { success() } else { discard() }
-    }
 }

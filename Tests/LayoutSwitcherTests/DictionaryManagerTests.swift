@@ -5,6 +5,22 @@ import Foundation
 /// Word-list parsing and the atomic rebuild. Each test uses its own DictionaryManager, so
 /// nothing here touches the shared instance or the user's real custom files.
 @Suite struct DictionaryManagerTests {
+    @Test func rebuildUsesTheSameValidationAsImport() throws {
+        let url = try tempFile("qwzxvb\nпривіт\nhello 42\nслово/AB\n")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let dm = DictionaryManager()
+        #expect(dm.loadDictionaryFile(url: url, language: .english) == 1)
+        dm.rebuildAsync(customEnglishWords: [], customUkrainianWords: [],
+                        englishPaths: [url.path], ukrainianPaths: [url.path],
+                        russianPaths: [url.path])
+        dm.addCustomEnglishWords([])
+        #expect(dm.isEnglishWord("qwzxvb"))
+        #expect(!dm.isEnglishWord("привіт"))
+        #expect(!dm.isEnglishWord("hello 42"))
+        #expect(!dm.isUkrainianWord("qwzxvb"))
+        #expect(!dm.isRussianWord("привіт"))
+        #expect(!dm.isUkrainianWord("слово/ab"))
+    }
 
     @Test func importedRowsMustBeWordsInTheSelectedLanguage() {
         #expect(DictionaryManager.isValidImportedWord("hello", language: .english))

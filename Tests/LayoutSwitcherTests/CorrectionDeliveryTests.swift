@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 @testable import LayoutSwitcher
 
 @Suite struct CorrectionDeliveryTests {
@@ -36,30 +37,30 @@ import Testing
         #expect(posted == [.backspace])
     }
 
-    @Test func invalidationBetweenDeliveryAndPublicationDiscardsUndo() {
-        var valid = true
-        var published = false
-        var discarded = false
-        let completion = {
-            CorrectionDelivery.publish(completed: true, contextIsValid: { valid },
-                                       success: { published = true },
-                                       discard: { discarded = true })
+    @Test @MainActor func invalidationBetweenDeliveryAndPublicationDiscardsUndo() async {
+        let operation = CorrectionOperation()
+        operation.begin()
+        let delivered = CorrectionDelivery.execute(deleteCount: 1, text: "а", restoreSpace: true,
+                                                  erasePause: {}) { _ in operation.canContinue }
+        #expect(delivered)
+        let published = await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { operation.invalidate() }
+            DispatchQueue.main.async {
+                continuation.resume(returning: operation.finish(completed: delivered))
+            }
         }
-        // A mouse/app event runs on main before the queued completion.
-        valid = false
-        completion()
         #expect(!published)
-        #expect(discarded)
+        #expect(!operation.isActive)
+        operation.begin()
+        #expect(operation.finish(completed: true))
     }
 
     @Test func incompleteDeliveryNeverPublishesEvenWithUnchangedFocus() {
-        var published = false
-        var discarded = false
-        CorrectionDelivery.publish(completed: false, contextIsValid: { true },
-                                   success: { published = true },
-                                   discard: { discarded = true })
-        #expect(!published)
-        #expect(discarded)
+        let operation = CorrectionOperation()
+        operation.begin()
+        #expect(!operation.finish(completed: false))
+        #expect(!operation.canContinue)
+        #expect(!operation.finish(completed: true))
     }
 
     @Test func invalidDeleteCountPostsNothing() {

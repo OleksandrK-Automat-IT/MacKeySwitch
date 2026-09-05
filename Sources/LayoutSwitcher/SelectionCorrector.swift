@@ -41,15 +41,22 @@ enum SelectionCorrector {
 
     /// Main-thread state. A second conversion would overwrite the first one's temporary
     /// pasteboard contents and make both operations target an uncertain selection.
-    private static var operationInProgress = false
+    private static let selectionOperation = CorrectionOperation()
+
+    /// Real typing/clicks observed by KeyboardMonitor invalidate a borrowed selection,
+    /// including changes within the same AX text element.
+    static func invalidatePendingSelection() {
+        selectionOperation.invalidate()
+    }
 
     private struct EditingContext {
         let pid: pid_t
         let focusedElement: AXUIElement?
+        let selectedRange: CFRange?
     }
 
     static func correctSelection(completion: @escaping (Result<String, Failure>) -> Void) {
-        guard !operationInProgress else {
+        guard !selectionOperation.isActive else {
             completion(.failure(.alreadyRunning))
             return
         }
@@ -65,15 +72,15 @@ enum SelectionCorrector {
             completion(.failure(.contextChanged))
             return
         }
-        operationInProgress = true
+        selectionOperation.begin()
 
         func complete(_ result: Result<String, Failure>) {
-            operationInProgress = false
+            selectionOperation.finish(completed: false)
             completion(result)
         }
 
         whenModifiersAreReleased(onTimeout: { complete(.failure(.modifiersHeld)) }) {
-            guard contextMatches(originalContext),
+            guard selectionOperation.canContinue, contextMatches(originalContext),
                   SecureInputDetector.current() == .notSecure else {
                 complete(.failure(.contextChanged))
                 return
@@ -83,7 +90,8 @@ enum SelectionCorrector {
 
             readSelection(pasteboard: pasteboard) { selection in
                 func fail(_ reason: Failure) {
-                    restore(saved, to: pasteboard)
+                    // A user action may have copied newer contents while Copy was pending.
+                    if selectionOperation.canContinue { restore(saved, to: pasteboard) }
                     complete(.failure(reason))
                 }
 
@@ -102,11 +110,14 @@ enum SelectionCorrector {
                 guard converted != selection else {
                     return fail(.nothingToChange)
                 }
-                guard contextMatches(originalContext) else {
+                guard selectionOperation.canContinue, contextMatches(originalContext) else {
                     return fail(.contextChanged)
                 }
                 guard SecureInputDetector.current() == .notSecure else {
                     return fail(.secureInput)
+                }
+                guard KeyboardMonitor.modifiersAreReleased else {
+                    return fail(.modifiersHeld)
                 }
 
                 pasteboard.clearContents()
@@ -185,7 +196,19 @@ enum SelectionCorrector {
         guard let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
             return nil
         }
-        return EditingContext(pid: pid, focusedElement: focusedElement(pid: pid))
+        let element = focusedElement(pid: pid)
+        return EditingContext(pid: pid, focusedElement: element,
+                              selectedRange: element.flatMap(selectedRange))
+    }
+
+    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString,
+                                            &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+        return range
     }
 
     private static func contextMatches(_ original: EditingContext) -> Bool {
@@ -194,7 +217,13 @@ enum SelectionCorrector {
         }
         let current = focusedElement(pid: original.pid)
         switch (original.focusedElement, current) {
-        case let (lhs?, rhs?): return CFEqual(lhs, rhs)
+        case let (lhs?, rhs?):
+            guard CFEqual(lhs, rhs) else { return false }
+            if let before = original.selectedRange {
+                guard let now = selectedRange(rhs) else { return false }
+                return before.location == now.location && before.length == now.length
+            }
+            return true
         case (nil, nil): return true
         default: return false
         }
