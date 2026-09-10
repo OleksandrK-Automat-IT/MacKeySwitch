@@ -24,6 +24,14 @@ import Cocoa
 /// before.
 enum SelectionCorrector {
 
+    /// What a successful conversion produced: the text is the word or text the caller can
+    /// choose to act on further (e.g. teach into a dictionary); the language is what it was
+    /// converted *to*, since the caller has no other way to know which dictionary that is.
+    struct Conversion: Equatable {
+        let text: String
+        let language: Language
+    }
+
     enum Failure: Error {
         case noAccessibility
         case noSelection
@@ -69,7 +77,7 @@ enum SelectionCorrector {
         let selectedRange: CFRange?
     }
 
-    static func correctSelection(completion: @escaping (Result<String, Failure>) -> Void) {
+    static func correctSelection(completion: @escaping (Result<Conversion, Failure>) -> Void) {
         guard !selectionOperation.isActive else {
             completion(.failure(.alreadyRunning))
             return
@@ -88,7 +96,7 @@ enum SelectionCorrector {
         }
         selectionOperation.begin()
 
-        func complete(_ result: Result<String, Failure>) {
+        func complete(_ result: Result<Conversion, Failure>) {
             selectionOperation.finish(completed: false)
             completion(result)
         }
@@ -140,7 +148,7 @@ enum SelectionCorrector {
                     InputSourceManager.switchTo(target)
                     debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
                              + "\(target.rawValue) via Accessibility, \(selection.count) chars")
-                    complete(.success(converted))
+                    complete(.success(Conversion(text: converted, language: target)))
                     return
                 }
 
@@ -163,7 +171,7 @@ enum SelectionCorrector {
                     }
                     debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
                              + "\(target.rawValue), \(selection.count) chars")
-                    complete(.success(converted))
+                    complete(.success(Conversion(text: converted, language: target)))
                 }
             }
         }

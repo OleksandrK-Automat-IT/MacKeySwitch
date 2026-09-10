@@ -187,12 +187,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         monitor.noteSelfInitiatedLayoutSwitch()
         SelectionCorrector.correctSelection { [weak self] result in
             switch result {
-            case .success:
+            case .success(let conversion):
                 self?.settings.recordCorrection()
                 self?.updateLayoutIcon()
+                self?.learnConvertedWord(conversion)
             case .failure(let reason):
                 debugLog("[LayoutSwitcher] selection skipped: \(reason)")
             }
+        }
+    }
+
+    /// The word to learn from a selection conversion, or nil when there isn't one — a
+    /// multi-word selection, stray punctuation, or a script that does not match the
+    /// language it was just converted to. Pure, so the decision is testable on its own,
+    /// apart from the settings write and dictionary rebuild that act on its answer.
+    static func learnableWord(from text: String, language: Language) -> String? {
+        let word = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !word.isEmpty, !word.contains(where: \.isWhitespace),
+              DictionaryManager.isValidImportedWord(word, language: language)
+        else { return nil }
+        return word
+    }
+
+    /// Teach the target dictionary the word a selection conversion produced. Automatic
+    /// detection only ever asks "is the other reading a real word?" — a brand or an
+    /// identifier like "github" fails that test in every bundled and system dictionary,
+    /// so "пшерги" never reaches the score a correction needs, no matter how many times it
+    /// is fixed by hand. Learning it here is the only way this app can ever catch it later.
+    private func learnConvertedWord(_ conversion: SelectionCorrector.Conversion) {
+        guard let word = Self.learnableWord(from: conversion.text, language: conversion.language)
+        else { return }
+
+        switch conversion.language {
+        case .english:
+            guard !settings.customEnglishWords.contains(word) else { return }
+            settings.customEnglishWords.append(word)
+            DictionaryManager.shared.addCustomEnglishWords([word])
+        case .ukrainian:
+            guard !settings.customUkrainianWords.contains(word) else { return }
+            settings.customUkrainianWords.append(word)
+            DictionaryManager.shared.addCustomUkrainianWords([word])
+        case .russian:
+            guard !settings.customRussianWords.contains(word) else { return }
+            settings.customRussianWords.append(word)
+            DictionaryManager.shared.addCustomRussianWords([word])
         }
     }
 

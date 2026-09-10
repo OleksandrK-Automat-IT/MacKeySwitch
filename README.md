@@ -12,7 +12,9 @@ like Punto Switcher, but native, small, and open source.
 - **Correct on demand** — `⌃⇧Space` fixes the last word even when the app was not confident
   enough to touch it on its own.
 - **Selection correction** — select any text, press `⌃⇧X`, and it is re-read in the other
-  layout. Works on text you never typed.
+  layout. Works on text you never typed. A single converted word — a name or a brand no
+  dictionary would recognise — is remembered, so the next time it is *mistyped* the
+  automatic pass catches it too.
 - **Undo** — `⌃⇧Z` reverts the last correction, and the word is remembered so it is not
   touched again. When there is nothing to revert, the same key converts the last word,
   so one shortcut toggles the word either way.

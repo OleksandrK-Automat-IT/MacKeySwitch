@@ -367,10 +367,20 @@ what the exceptions editor was until it was moved into one.
    attributed to the previous layout "corrects" into the text already on screen. The exact
    source ID is retained too: Apple's `Ukrainian` layout swaps И/І compared with
    `Ukrainian-PC` and uses a different backtick key
-7. **Selection conversion borrows the pasteboard**: `AXSelectedText` is optional and most
-   browsers and editors do not publish it, so the fallback is ⌘C. The original pasteboard is
-   snapshotted and restored, but the converted text is briefly on it
-8. **Anything a shortcut posts waits for that shortcut's modifiers to be released**: the
+7. **Selection conversion prefers writing through Accessibility**, `AXUIElementSetAttributeValue`
+   on `kAXSelectedTextAttribute`, which is instant and never touches the pasteboard. Most
+   browsers and editors do not support the write (nor do they publish `AXSelectedText` for
+   reading), so the fallback for both directions is ⌘C/⌘V; the original pasteboard is
+   snapshotted and restored, but the converted text is briefly on it, and a synthetic ⌘V
+   posted to a freshly focused app can be read back too late — the fault a bug report once
+   traced to the fixed delay guessing wrong on a slow first paste
+8. **A selection conversion teaches the target dictionary**, not the exceptions list.
+   Automatic detection needs the other-layout reading to be a real word; a brand or an
+   identifier fails that in every dictionary this app has, so no amount of manual fixing
+   ever raises its score without this. Only a single, spellable token is learned — a
+   multi-word selection is not one giant word waiting to happen. `AppDelegate.learnableWord`
+   is the pure decision; the settings write and dictionary rebuild are its caller's job
+9. **Anything a shortcut posts waits for that shortcut's modifiers to be released**: the
    physical keys are still down when the hotkey fires, and the window server folds the
    hardware modifier state into every posted event. Without the wait the backspaces went out
    as ⌃Backspace and the replacement letters as control chords — the word vanished and
