@@ -31,4 +31,11 @@ import Testing
         #expect(pasteboard.string(forType: .string) == "plain")
         #expect(pasteboard.string(forType: .html) == "<b>plain</b>")
     }
+
+    @Test func writingToAnElementThatRefusesFailsCleanlyRatherThanCrashing() {
+        // The system-wide element accepts no attribute writes; this exercises exactly the
+        // AXError path every genuinely unsupported app takes, without needing one running.
+        let element = AXUIElementCreateSystemWide()
+        #expect(!SelectionCorrector.replaceSelectionViaAccessibility(element, with: "привіт"))
+    }
 }

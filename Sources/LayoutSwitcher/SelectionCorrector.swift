@@ -11,6 +11,17 @@ import Cocoa
 /// come back up. A posted ⌘C or ⌘V carries its own flags, but the physical modifiers are
 /// live at the same time, so an app pressed with the chord still held sees ⌃⇧⌘V — which is
 /// not Paste, and nothing happens.
+///
+/// The replacement itself prefers writing straight through Accessibility over the
+/// clipboard: a synthetic ⌘V has to be *posted*, and nothing tells this app when the
+/// target has actually read the pasteboard as a result. The 0.3s that used to guard the
+/// restore was a guess, and on a slow first paste into a freshly focused field it guessed
+/// wrong — the restore ran before the app read the converted text, so the paste landed
+/// with whatever was on the clipboard *before* this ran. `kAXSelectedTextAttribute` is
+/// settable in most native Cocoa text views and sidesteps the whole race: the replacement
+/// is one synchronous call, nothing touches the pasteboard. Browsers and most Electron
+/// apps do not support the write, and fall through to the clipboard path below exactly as
+/// before.
 enum SelectionCorrector {
 
     enum Failure: Error {
@@ -28,10 +39,13 @@ enum SelectionCorrector {
         case nothingToChange
     }
 
-    /// How long to wait before restoring the pasteboard. Long enough for the target app to
-    /// have read the paste, short enough that the user is unlikely to copy something else
-    /// into the gap.
-    private static let pasteboardRestoreDelay: TimeInterval = 0.3
+    /// How long to wait before restoring the pasteboard, for the apps that fall through
+    /// to it — Accessibility handles the rest without ever touching the clipboard. Long
+    /// enough for the target app to have read the paste, short enough that the user is
+    /// unlikely to copy something else into the gap. A guess either way: nothing signals
+    /// when the read actually happened, and 0.3s guessed wrong on a slow first paste into
+    /// a freshly focused field, which is what this value used to be before that surfaced.
+    private static let pasteboardRestoreDelay: TimeInterval = 0.5
 
     /// How long to wait for the shortcut's own modifier keys to come back up.
     private static let modifierReleaseTimeout: TimeInterval = 1.0
@@ -116,6 +130,20 @@ enum SelectionCorrector {
                 guard SecureInputDetector.current() == .notSecure else {
                     return fail(.secureInput)
                 }
+                // Try the direct replacement first — synchronous, and it does not touch
+                // the pasteboard, so there is nothing here to race. Reading via Copy above
+                // may already have overwritten the pasteboard with the plain selection,
+                // so the restore still runs regardless of which path wrote the selection.
+                if let element = originalContext.focusedElement,
+                   Self.replaceSelectionViaAccessibility(element, with: converted) {
+                    restore(saved, to: pasteboard)
+                    InputSourceManager.switchTo(target)
+                    debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
+                             + "\(target.rawValue) via Accessibility, \(selection.count) chars")
+                    complete(.success(converted))
+                    return
+                }
+
                 guard KeyboardMonitor.modifiersAreReleased else {
                     return fail(.modifiersHeld)
                 }
@@ -176,6 +204,16 @@ enum SelectionCorrector {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { poll() }
         }
         poll()
+    }
+
+    /// Replace the selection in place, for the apps whose focused element accepts a write
+    /// to the same attribute `accessibilitySelection()` reads. Never throws or crashes on
+    /// an element that refuses — an unsupported attribute is an ordinary `AXError`, not an
+    /// exception — so the caller can fall back to the clipboard without knowing which apps
+    /// support which direction.
+    static func replaceSelectionViaAccessibility(_ element: AXUIElement, with text: String) -> Bool {
+        AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+            == .success
     }
 
     /// The selected text of the focused element in the frontmost app, if it publishes one.
