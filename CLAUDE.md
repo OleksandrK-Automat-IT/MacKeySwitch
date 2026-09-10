@@ -371,9 +371,12 @@ what the exceptions editor was until it was moved into one.
    on `kAXSelectedTextAttribute`, which is instant and never touches the pasteboard. Most
    browsers and editors do not support the write (nor do they publish `AXSelectedText` for
    reading), so the fallback for both directions is ⌘C/⌘V; the original pasteboard is
-   snapshotted and restored, but the converted text is briefly on it, and a synthetic ⌘V
-   posted to a freshly focused app can be read back too late — the fault a bug report once
-   traced to the fixed delay guessing wrong on a slow first paste
+   snapshotted and restored, but the converted text is briefly on it. The write-back for
+   ⌘V is a *promised* `NSPasteboardItem` (`SelectionCorrector.ConvertedTextProvider`), not
+   a plain string with a timer: two rounds of a fixed restore delay guessing wrong on a
+   slow first paste both landed the pre-existing clipboard in place of the conversion, and
+   a promise calls back when something actually reads the data instead of guessing when
+   that happened. A generous backstop (2s) restores anyway if nothing ever reads it
 8. **A selection conversion teaches the target dictionary**, not the exceptions list.
    Automatic detection needs the other-layout reading to be a real word; a brand or an
    identifier fails that in every dictionary this app has, so no amount of manual fixing
