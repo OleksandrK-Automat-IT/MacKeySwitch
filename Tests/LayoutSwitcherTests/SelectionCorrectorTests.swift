@@ -33,10 +33,12 @@ import Testing
     }
 
     @Test func writingToAnElementThatRefusesFailsCleanlyRatherThanCrashing() {
-        // The system-wide element accepts no attribute writes; this exercises exactly the
-        // AXError path every genuinely unsupported app takes, without needing one running.
+        // The system-wide element accepts no attribute writes and cannot be read back
+        // either; this exercises exactly the AXError path every genuinely unsupported app
+        // takes, without needing one running.
         let element = AXUIElementCreateSystemWide()
-        #expect(!SelectionCorrector.replaceSelectionViaAccessibility(element, with: "привіт"))
+        #expect(!SelectionCorrector.replaceSelectionViaAccessibility(
+            element, replacing: "ghbdsn", with: "привіт"))
     }
 
     @Test func aPromisedItemDeliversItsTextOnlyWhenSomethingReadsIt() {

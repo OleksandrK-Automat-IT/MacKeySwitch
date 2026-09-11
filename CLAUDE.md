@@ -368,10 +368,16 @@ what the exceptions editor was until it was moved into one.
    source ID is retained too: Apple's `Ukrainian` layout swaps И/І compared with
    `Ukrainian-PC` and uses a different backtick key
 7. **Selection conversion prefers writing through Accessibility**, `AXUIElementSetAttributeValue`
-   on `kAXSelectedTextAttribute`, which is instant and never touches the pasteboard. Most
-   browsers and editors do not support the write (nor do they publish `AXSelectedText` for
-   reading), so the fallback for both directions is ⌘C/⌘V; the original pasteboard is
-   snapshotted and restored, but the converted text is briefly on it. The write-back for
+   on `kAXSelectedTextAttribute`, which is instant and never touches the pasteboard. This
+   was found to be **not trustworthy on its own**: a real app, live-tested, returned
+   `AXError.success` on every write while the on-screen text never changed — the fallback
+   never even ran, since the (correct) success report short-circuited it. Every write is
+   now followed by a read-back of the same attribute, trusted only when it no longer
+   equals the original selection; a bridge that cannot be read back at all is treated the
+   same as one caught lying. Most browsers and editors do not support the write (nor do
+   they publish `AXSelectedText` for reading) and fail this cleanly, so the fallback for
+   both directions is ⌘C/⌘V; the original pasteboard is snapshotted and restored, but the
+   converted text is briefly on it. The write-back for
    ⌘V is a *promised* `NSPasteboardItem` (`SelectionCorrector.ConvertedTextProvider`), not
    a plain string with a timer: two rounds of a fixed restore delay guessing wrong on a
    slow first paste both landed the pre-existing clipboard in place of the conversion, and

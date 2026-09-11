@@ -147,7 +147,7 @@ enum SelectionCorrector {
                 // may already have overwritten the pasteboard with the plain selection,
                 // so the restore still runs regardless of which path wrote the selection.
                 if let element = originalContext.focusedElement,
-                   Self.replaceSelectionViaAccessibility(element, with: converted) {
+                   Self.replaceSelectionViaAccessibility(element, replacing: selection, with: converted) {
                     restore(saved, to: pasteboard)
                     InputSourceManager.switchTo(target)
                     debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
@@ -281,9 +281,26 @@ enum SelectionCorrector {
     /// an element that refuses — an unsupported attribute is an ordinary `AXError`, not an
     /// exception — so the caller can fall back to the clipboard without knowing which apps
     /// support which direction.
-    static func replaceSelectionViaAccessibility(_ element: AXUIElement, with text: String) -> Bool {
-        AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
-            == .success
+    ///
+    /// `AXError.success` on its own is not proof of anything: a real app, live-tested,
+    /// reported success on every call while the on-screen text never changed at all — some
+    /// AX bridges (web content in particular) accept the write and silently drop it. The
+    /// only way to catch that is to read the attribute straight back and check it actually
+    /// moved off the original text; a bridge that cannot be read back at all is treated the
+    /// same as one that lied, since there is nothing here to trust either way.
+    static func replaceSelectionViaAccessibility(
+        _ element: AXUIElement, replacing original: String, with text: String
+    ) -> Bool {
+        guard AXUIElementSetAttributeValue(
+            element, kAXSelectedTextAttribute as CFString, text as CFTypeRef
+        ) == .success else { return false }
+
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+                element, kAXSelectedTextAttribute as CFString, &value) == .success,
+              let readBack = value as? String
+        else { return false }
+        return readBack != original
     }
 
     /// The selected text of the focused element in the frontmost app, if it publishes one.
