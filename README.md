@@ -154,7 +154,14 @@ They are not compiled into the app; import one if you want the coverage.
 
 Accessibility replacement is preferred and must be verified against the expected text.
 An accepted but unverified write is not followed by another paste, because it may already
-have changed the text. Explicitly unsupported writes fall back to Copy/Paste.
+have changed the text. Explicitly unsupported writes fall back to Paste.
+
+The selection itself must be readable through Accessibility: either selected text or the
+field value plus its selected UTF-16 range. Cmd+C is not used to obtain it, because a
+clipboard change could come from another app or clipboard synchronization. Editors that
+expose neither form of selection cannot be converted safely and are left untouched.
+The conversion uses the selected source variants, including Ukrainian versus Ukrainian-PC
+and Russian versus RussianWin; punctuation does not determine the language of the text.
 
 During a fallback paste, another selection conversion is blocked until confirmation or
 failure. The original clipboard is restored only after the target text is verified, and

@@ -391,7 +391,11 @@ what the exceptions editor was until it was moved into one.
    original UTF-16 selection range), or the exact converted selected text when the full
    value is unavailable. An accepted but unverified write is **uncertain**, never permission
    to paste again: it may already have replaced the text and collapsed the selection.
-   Only explicitly unsupported writes use the ⌘V fallback. `SelectionPasteTransaction`
+   Reading uses AXSelectedText or AXValue plus the captured UTF-16 selection range, never
+   Cmd+C: an unrelated clipboard write must not become replacement text. Unsupported or
+   inconsistent selection reads fail without modifying text or clipboard. Concrete source
+   IDs are passed to LayoutTransliterator in both directions; punctuation is excluded from
+   language voting. Only explicitly unsupported writes use the ⌘V fallback. `SelectionPasteTransaction`
    keeps that operation active until verification or failure, and restores the original
    clipboard only after the target text is verified and only if clipboard ownership has
    not changed. Clipboard reads are not acknowledgements: history utilities can read a
@@ -434,7 +438,7 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (300 tests, 41 suites) — run it more than
+- [ ] Unit tests in `run-tests.sh` all pass (306 tests, 41 suites) — run it more than
       once when a suite touching TIS was added; the crash is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary

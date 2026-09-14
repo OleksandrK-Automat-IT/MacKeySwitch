@@ -72,4 +72,35 @@ import Testing
         #expect(LayoutTransliterator.detectLanguage(of: "hello вг") == .english)
         #expect(LayoutTransliterator.detectLanguage(of: "привіт ab") == .ukrainian)
     }
+
+    @Test(arguments: [".......", ";;;;;;;;", ",,,,,,,,", "[]{}'\"123"])
+    func punctuationCannotOutvoteLetters(suffix: String) {
+        #expect(LayoutTransliterator.detectLanguage(of: "привіт" + suffix) == .ukrainian)
+        #expect(LayoutTransliterator.detectLanguage(of: "hello" + suffix) == .english)
+        #expect(LayoutTransliterator.detectLanguage(of: suffix) == nil)
+    }
+
+    @Test(arguments: ["com.apple.keylayout.Ukrainian", "com.apple.keylayout.Ukrainian-PC",
+                      "com.apple.keylayout.Russian", "com.apple.keylayout.RussianWin"])
+    func concreteLayoutMatchesKeyMapping(id: String) {
+        let language: Language = id.contains("Ukrainian") ? .ukrainian : .russian
+        for typed in ["s", "b", "S", "B", "`", "~", "ghbdsn"] {
+            let expected = KeyMapping.reconstruct(keycodes: keycodes(forTyping: typed),
+                                                  language: language, sourceID: id)
+            let converted = LayoutTransliterator.convert(typed, from: .english, to: language,
+                                                         sourceID: nil, targetID: id)
+            #expect(converted == expected)
+            #expect(LayoutTransliterator.convert(converted, from: language, to: .english,
+                                                  sourceID: id, targetID: nil) == typed)
+        }
+    }
+
+    @Test func cyrillicWithTrailingDotsConvertsInTheCorrectDirection() throws {
+        let text = "привіт......."
+        let source = try #require(LayoutTransliterator.detectLanguage(of: text))
+        #expect(source == .ukrainian)
+        #expect(LayoutTransliterator.convert(text, from: source, to: .english,
+                                              sourceID: "com.apple.keylayout.Ukrainian-PC",
+                                              targetID: nil) == "ghbdsn.......")
+    }
 }

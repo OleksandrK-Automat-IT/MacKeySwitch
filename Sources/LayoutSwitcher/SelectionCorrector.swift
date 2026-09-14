@@ -8,7 +8,7 @@ import Cocoa
 /// sentence noticed after the fact. The user selects it and presses the shortcut.
 ///
 /// The work is asynchronous because it has to wait for the shortcut's own modifier keys to
-/// come back up. A posted ⌘C or ⌘V carries its own flags, but the physical modifiers are
+/// come back up. A posted ⌘V carries its own flags, but the physical modifiers are
 /// live at the same time, so an app pressed with the chord still held sees ⌃⇧⌘V — which is
 /// not Paste, and nothing happens.
 ///
@@ -54,9 +54,6 @@ enum SelectionCorrector {
 
     /// How long to wait for the shortcut's own modifier keys to come back up.
     private static let modifierReleaseTimeout: TimeInterval = 1.0
-
-    /// How long to give the frontmost app to answer a copy.
-    private static let copyTimeout: TimeInterval = 0.4
 
     /// Main-thread state. A second conversion would overwrite the first one's temporary
     /// pasteboard contents and make both operations target an uncertain selection.
@@ -104,19 +101,8 @@ enum SelectionCorrector {
                 complete(.failure(.contextChanged))
                 return
             }
-            let pasteboard = NSPasteboard.general
-            let saved = snapshot(pasteboard)
-
-            readSelection(pasteboard: pasteboard) { selection in
-                let borrowedChangeCount = pasteboard.changeCount
-                func restoreBorrowedClipboard() {
-                    if pasteboard.changeCount == borrowedChangeCount {
-                        restore(saved, to: pasteboard)
-                    }
-                }
+            readSelection(context: originalContext) { selection in
                 func fail(_ reason: Failure) {
-                    // A user action may have copied newer contents while Copy was pending.
-                    if selectionOperation.canContinue { restoreBorrowedClipboard() }
                     complete(.failure(reason))
                 }
 
@@ -131,7 +117,11 @@ enum SelectionCorrector {
                     return fail(.ambiguousLanguage)
                 }
                 let target = source.correctionTarget(cyrillic: cyrillic)
-                let converted = LayoutTransliterator.convert(selection, to: target)
+                let converted = LayoutTransliterator.convert(
+                    selection, from: source, to: target,
+                    sourceID: InputSourceManager.preferredSourceID(for: source),
+                    targetID: InputSourceManager.preferredSourceID(for: target)
+                )
                 guard converted != selection else {
                     return fail(.nothingToChange)
                 }
@@ -141,10 +131,7 @@ enum SelectionCorrector {
                 guard SecureInputDetector.current() == .notSecure else {
                     return fail(.secureInput)
                 }
-                // Try the direct replacement first — synchronous, and it does not touch
-                // the pasteboard, so there is nothing here to race. Reading via Copy above
-                // may already have overwritten the pasteboard with the plain selection,
-                // so the restore still runs regardless of which path wrote the selection.
+                // Reading and direct replacement never touch the clipboard.
                 let expectedValue = originalContext.focusedElement.flatMap { element in
                     expectedReplacementValue(value: stringAttribute(element, kAXValueAttribute),
                                              range: originalContext.selectedRange,
@@ -166,7 +153,6 @@ enum SelectionCorrector {
                           contextMatches(originalContext, checkRange: false) else {
                         return fail(.contextChanged)
                     }
-                    restoreBorrowedClipboard()
                     InputSourceManager.switchTo(target)
                     debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
                              + "\(target.rawValue) via Accessibility, \(selection.count) chars")
@@ -189,6 +175,11 @@ enum SelectionCorrector {
                 // Plain data: a promise can be fulfilled by any clipboard reader and
                 // cannot identify the target app. Keep the operation reserved until the
                 // target text is verified or the attempt is declared unconfirmed.
+                let pasteboard = NSPasteboard.general
+                let saved = snapshot(pasteboard)
+                guard selectionOperation.canContinue, contextMatches(originalContext),
+                      SecureInputDetector.current() == .notSecure,
+                      KeyboardMonitor.modifiersAreReleased else { return fail(.contextChanged) }
                 guard let transaction = SelectionPasteTransaction(
                     pasteboard: pasteboard, saved: saved, text: converted
                 ) else { return complete(.failure(.replacementUnconfirmed)) }
@@ -223,39 +214,34 @@ enum SelectionCorrector {
 
     // MARK: - Reading the selection
 
-    /// Accessibility first, then the app's own Copy command.
-    ///
-    /// `AXSelectedText` is optional and a great many apps — browsers, anything Electron,
-    /// most editors with a custom text engine — do not publish it. Asking for it was the
-    /// whole implementation at first, and it reported "no selection" for real selections.
-    /// Copy works wherever ⌘C works, at the cost of borrowing the pasteboard.
+    /// Read only from the captured AX element. A change to the general clipboard cannot
+    /// prove that Cmd+C completed: Universal Clipboard or another app can write it too.
     private static func readSelection(
-        pasteboard: NSPasteboard,
+        context: EditingContext,
         completion: @escaping (String?) -> Void
     ) {
-        if let viaAccessibility = accessibilitySelection(), !viaAccessibility.isEmpty {
-            completion(viaAccessibility)
-            return
-        }
+        guard let element = context.focusedElement else { return completion(nil) }
+        completion(selectionText(
+            selectedText: stringAttribute(element, kAXSelectedTextAttribute),
+            value: stringAttribute(element, kAXValueAttribute), range: context.selectedRange
+        ))
+    }
 
-        let before = pasteboard.changeCount
-        post(keyCode: copyKeyCode)
-
-        // A copy with nothing selected leaves the pasteboard untouched, so an unchanged
-        // count is how "no selection" is told apart from "the app was slow".
-        let deadline = Date().addingTimeInterval(copyTimeout)
-        func poll() {
-            if pasteboard.changeCount != before {
-                completion(pasteboard.string(forType: .string))
-                return
+    static func selectionText(selectedText: String?, value: String?, range: CFRange?) -> String? {
+        if let range {
+            guard range.location >= 0, range.length > 0 else { return nil }
+            if let value {
+                let text = value as NSString
+                guard range.location <= text.length, range.length <= text.length - range.location
+                else { return nil }
+                let extracted = text.substring(with: NSRange(location: range.location, length: range.length))
+                // Inconsistent AX attributes mean the snapshot is no longer trustworthy.
+                if let selectedText, selectedText != extracted { return nil }
+                return extracted
             }
-            guard Date() < deadline else {
-                completion(nil)
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { poll() }
         }
-        poll()
+        guard let selectedText, !selectedText.isEmpty else { return nil }
+        return selectedText
     }
 
     /// Only an explicitly rejected write permits a second replacement mechanism.
@@ -289,7 +275,7 @@ enum SelectionCorrector {
     }
 
     /// Replace the selection in place, for the apps whose focused element accepts a write
-    /// to the same attribute `accessibilitySelection()` reads. Never throws or crashes on
+    /// to the same attribute `readSelection` reads. Never throws or crashes on
     /// an element that refuses — an unsupported attribute is an ordinary `AXError`, not an
     /// exception — so the caller can fall back to the clipboard without knowing which apps
     /// support which direction.
@@ -364,21 +350,6 @@ enum SelectionCorrector {
         }
     }
 
-    private static func accessibilitySelection() -> String? {
-        guard let context = editingContext(), let element = context.focusedElement else {
-            return nil
-        }
-
-        var selectedValue: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-                element, kAXSelectedTextAttribute as CFString, &selectedValue) == .success,
-              let selected = selectedValue as? String
-        else {
-            return nil
-        }
-        return selected
-    }
-
     // MARK: - Pasteboard
 
     /// Items read from a pasteboard are invalidated by `clearContents()`, so their data has
@@ -409,7 +380,6 @@ enum SelectionCorrector {
 
     // MARK: - Synthetic keys
 
-    private static let copyKeyCode: CGKeyCode = 0x08  // 'c'
     private static let pasteKeyCode: CGKeyCode = 0x09 // 'v'
 
     private static func post(keyCode: CGKeyCode) {

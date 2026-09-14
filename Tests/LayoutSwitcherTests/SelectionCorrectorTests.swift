@@ -3,6 +3,25 @@ import Testing
 @testable import LayoutSwitcher
 
 @Suite @MainActor struct SelectionCorrectorTests {
+    @Test func inaccessibleSelectionDoesNotUseClipboard() {
+        #expect(SelectionCorrector.selectionText(selectedText: nil, value: nil, range: nil) == nil)
+    }
+
+    @Test func selectionCanBeReadFromFieldValueAndUTF16Range() {
+        #expect(SelectionCorrector.selectionText(selectedText: nil, value: "🙂 ghbdsn!",
+                                                 range: CFRange(location: 3, length: 6)) == "ghbdsn")
+        #expect(SelectionCorrector.selectionText(selectedText: "ghbdsn", value: nil,
+                                                 range: nil) == "ghbdsn")
+    }
+
+    @Test func inconsistentOrInvalidSelectionIsRejected() {
+        #expect(SelectionCorrector.selectionText(selectedText: "remote", value: "local",
+                                                 range: CFRange(location: 0, length: 5)) == nil)
+        for range in [CFRange(location: -1, length: 1), CFRange(location: 0, length: 0),
+                      CFRange(location: 0, length: Int.max), CFRange(location: Int.max, length: 1)] {
+            #expect(SelectionCorrector.selectionText(selectedText: nil, value: "local", range: range) == nil)
+        }
+    }
     @Test func restoringAnEmptyPasteboardActuallyClearsIt() {
         let pasteboard = NSPasteboard(name: .init("MacKeySwitchTests.empty"))
         pasteboard.clearContents()

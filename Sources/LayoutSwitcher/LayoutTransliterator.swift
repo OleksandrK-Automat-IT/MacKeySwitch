@@ -8,10 +8,8 @@ import Foundation
 /// "п" on a Ukrainian one.
 enum LayoutTransliterator {
 
-    /// Built from `KeyMapping`, so the two paths cannot drift apart: a key added there is
-    /// transliterable here for free. One table per Cyrillic layout going out; a single
-    /// table coming back, because the two Cyrillic layouts share every key they have in
-    /// common and each contributes its own letters for the rest.
+    /// Legacy language-only API, using the default PC geometry. The live selection path
+    /// uses the explicit source/target overload below rather than these merged tables.
     private static let tables: (toUkrainian: [Character: Character],
                                 toRussian: [Character: Character],
                                 toEnglish: [Character: Character]) = {
@@ -49,6 +47,26 @@ enum LayoutTransliterator {
         return String(text.map { table[$0] ?? $0 })
     }
 
+    /// The live selection path supplies both concrete layouts. Language alone cannot
+    /// distinguish Ukrainian from Ukrainian-PC (or Russian from RussianWin).
+    static func convert(_ text: String, from source: Language, to target: Language,
+                        sourceID: String?, targetID: String?) -> String {
+        var mapping: [Character: Character] = [:]
+        var ambiguous: Set<Character> = []
+        for keycode in KeyMapping.unshifted.keys.sorted() {
+            for shift in [false, true] {
+                let stroke = Keystroke(keycode: keycode, shift: shift)
+                guard let input = KeyMapping.character(for: stroke, language: source, sourceID: sourceID),
+                      let output = KeyMapping.character(for: stroke, language: target, sourceID: targetID)
+                else { continue }
+                if let previous = mapping[input], previous != output { ambiguous.insert(input) }
+                mapping[input] = output
+            }
+        }
+        // Characters shared by multiple physical keys cannot be inverted reliably.
+        return String(text.map { ambiguous.contains($0) ? $0 : (mapping[$0] ?? $0) })
+    }
+
     /// Which layout the text reads as, by counting letters of each script.
     ///
     /// Counting rather than sampling the first letter: real selections start with quotes,
@@ -65,6 +83,7 @@ enum LayoutTransliterator {
         var ukrainianMarks = 0
         var russianMarks = 0
         for character in text {
+            guard character.isLetter else { continue }
             if tables.toUkrainian[character] != nil || tables.toRussian[character] != nil {
                 latin += 1
             } else if tables.toEnglish[character] != nil {
