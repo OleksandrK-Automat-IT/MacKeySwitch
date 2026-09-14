@@ -20,8 +20,8 @@ import Cocoa
 /// with whatever was on the clipboard *before* this ran. `kAXSelectedTextAttribute` is
 /// settable in most native Cocoa text views and sidesteps the whole race: the replacement
 /// is one synchronous call, nothing touches the pasteboard. Browsers and most Electron
-/// apps do not support the write, and fall through to the clipboard path below exactly as
-/// before.
+/// apps do not support the write and use a clipboard transaction instead. Only verified
+/// target text acknowledges that transaction; clipboard observers are not paste receipts.
 enum SelectionCorrector {
 
     /// What a successful conversion produced: the text is the word or text the caller can
@@ -45,19 +45,12 @@ enum SelectionCorrector {
         /// whichever half is already right.
         case ambiguousLanguage
         case nothingToChange
+        case replacementUnconfirmed
     }
 
-    /// How long to wait after the pasteboard promise has been fulfilled — the reading
-    /// app has been handed the data — before restoring the original clipboard behind it.
-    /// Short: by this point the read has actually happened, this is only slack for the
-    /// app to finish acting on it.
-    private static let providedSettleDelay: TimeInterval = 0.05
-
-    /// How long to wait for the promise to be fulfilled at all before giving up and
-    /// restoring anyway. Generous, because the cost of guessing short here is the original
-    /// bug — the old clipboard landing in place of the conversion — while guessing long
-    /// only delays how soon the user's own clipboard is themselves again.
-    private static let providerBackstopTimeout: TimeInterval = 2.0
+    /// Bound verification, not clipboard restoration. An unconfirmed paste keeps its
+    /// payload on the clipboard so a late Cmd+V cannot pick up the previous contents.
+    private static let pasteVerificationTimeout: TimeInterval = 2.0
 
     /// How long to wait for the shortcut's own modifier keys to come back up.
     private static let modifierReleaseTimeout: TimeInterval = 1.0
@@ -115,9 +108,15 @@ enum SelectionCorrector {
             let saved = snapshot(pasteboard)
 
             readSelection(pasteboard: pasteboard) { selection in
+                let borrowedChangeCount = pasteboard.changeCount
+                func restoreBorrowedClipboard() {
+                    if pasteboard.changeCount == borrowedChangeCount {
+                        restore(saved, to: pasteboard)
+                    }
+                }
                 func fail(_ reason: Failure) {
                     // A user action may have copied newer contents while Copy was pending.
-                    if selectionOperation.canContinue { restore(saved, to: pasteboard) }
+                    if selectionOperation.canContinue { restoreBorrowedClipboard() }
                     complete(.failure(reason))
                 }
 
@@ -146,77 +145,78 @@ enum SelectionCorrector {
                 // the pasteboard, so there is nothing here to race. Reading via Copy above
                 // may already have overwritten the pasteboard with the plain selection,
                 // so the restore still runs regardless of which path wrote the selection.
-                if let element = originalContext.focusedElement,
-                   Self.replaceSelectionViaAccessibility(element, replacing: selection, with: converted) {
-                    restore(saved, to: pasteboard)
+                let expectedValue = originalContext.focusedElement.flatMap { element in
+                    expectedReplacementValue(value: stringAttribute(element, kAXValueAttribute),
+                                             range: originalContext.selectedRange,
+                                             original: selection, replacement: converted)
+                }
+                func verified() -> Bool {
+                    guard let element = originalContext.focusedElement else { return false }
+                    if let expectedValue {
+                        return stringAttribute(element, kAXValueAttribute) == expectedValue
+                    }
+                    return stringAttribute(element, kAXSelectedTextAttribute) == converted
+                }
+                let replacement = originalContext.focusedElement.map {
+                    Self.replaceSelectionViaAccessibility($0, with: converted, verified: verified)
+                } ?? .rejected
+                switch replacement {
+                case .applied:
+                    guard selectionOperation.canContinue,
+                          contextMatches(originalContext, checkRange: false) else {
+                        return fail(.contextChanged)
+                    }
+                    restoreBorrowedClipboard()
                     InputSourceManager.switchTo(target)
                     debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
                              + "\(target.rawValue) via Accessibility, \(selection.count) chars")
                     complete(.success(Conversion(text: converted, language: target)))
                     return
+                case .uncertain:
+                    return fail(.replacementUnconfirmed)
+                case .rejected:
+                    break
                 }
 
+                guard selectionOperation.canContinue, contextMatches(originalContext),
+                      SecureInputDetector.current() == .notSecure else {
+                    return fail(.contextChanged)
+                }
                 guard KeyboardMonitor.modifiersAreReleased else {
                     return fail(.modifiersHeld)
                 }
 
-                // A promised item, not a plain string: nothing tells this app when a
-                // fixed delay is *enough* — 0.3s guessed wrong on a slow first paste and
-                // pasted the pre-existing clipboard, which is the bug this replaced. A
-                // promise instead calls back the moment something actually asks for the
-                // data, which is the closest this app can get to knowing the read really
-                // happened, short of the AX write above.
-                var ourChangeCount = 0
-                var restored = false
-                func restoreOnce() {
-                    guard !restored else { return }
-                    restored = true
-                    // Only put the old contents back if nothing newer arrived: a write by
-                    // anything else in the meantime is newer than ours and must survive.
-                    if pasteboard.changeCount == ourChangeCount {
-                        restore(saved, to: pasteboard)
-                    }
-                }
-
-                let provider = ConvertedTextProvider(text: converted) {
-                    // The callback can arrive off-main; pasteboard state and `restored`
-                    // are both main-only.
-                    DispatchQueue.main.async {
-                        // A small settle after the handoff: the callback fires when the
-                        // data is handed to the reader, not once it has finished acting
-                        // on it, so this is still a guess — just a far smaller one than
-                        // guessing before any read has happened at all.
-                        DispatchQueue.main.asyncAfter(deadline: .now() + providedSettleDelay) {
-                            restoreOnce()
-                        }
-                    }
-                }
-                let item = NSPasteboardItem()
-                item.setDataProvider(provider, forTypes: [.string])
-                pasteboard.clearContents()
-                pasteboard.writeObjects([item])
-                ourChangeCount = pasteboard.changeCount
+                // Plain data: a promise can be fulfilled by any clipboard reader and
+                // cannot identify the target app. Keep the operation reserved until the
+                // target text is verified or the attempt is declared unconfirmed.
+                guard let transaction = SelectionPasteTransaction(
+                    pasteboard: pasteboard, saved: saved, text: converted
+                ) else { return complete(.failure(.replacementUnconfirmed)) }
 
                 post(keyCode: pasteKeyCode)
-                InputSourceManager.switchTo(target)
 
-                // Backstop: if nothing ever asks for the data — the paste never reached
-                // the app, or it reads selection state some other way first and gives up
-                // — the user's real clipboard must not stay overwritten indefinitely.
-                //
-                // Capturing `item`/`provider` here is not incidental: neither the
-                // pasteboard nor ARC has any reason to keep them alive on their own once
-                // this function returns, and the promise can only be fulfilled while they
-                // are. This closure is what keeps them retained for as long as the
-                // fulfillment window is open.
-                DispatchQueue.main.asyncAfter(deadline: .now() + providerBackstopTimeout) {
-                    _ = (item, provider)
-                    restoreOnce()
+                // This closure owns the transaction through its terminal state. There
+                // are no detached restore timers that could affect a later conversion.
+                let deadline = ProcessInfo.processInfo.systemUptime + pasteVerificationTimeout
+                func pollPaste() {
+                    // A successful replacement changes the selection range itself.
+                    let valid = selectionOperation.canContinue
+                        && contextMatches(originalContext, checkRange: false)
+                        && SecureInputDetector.current() == .notSecure
+                    switch transaction.update(
+                        valid: valid, verified: valid && verified(),
+                        timedOut: ProcessInfo.processInfo.systemUptime >= deadline
+                    ) {
+                    case .pending:
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.01) { pollPaste() }
+                    case .confirmed:
+                        InputSourceManager.switchTo(target)
+                        complete(.success(Conversion(text: converted, language: target)))
+                    case .unconfirmed:
+                        complete(.failure(.replacementUnconfirmed))
+                    }
                 }
-
-                debugLog("[LayoutSwitcher] selection converted \(source.rawValue) -> "
-                         + "\(target.rawValue), \(selection.count) chars")
-                complete(.success(Conversion(text: converted, language: target)))
+                pollPaste()
             }
         }
     }
@@ -258,22 +258,34 @@ enum SelectionCorrector {
         poll()
     }
 
-    /// Hands `text` to the pasteboard only once something actually asks for it, and
-    /// reports back when that happens — see the promised-item comment in `correctSelection`.
-    final class ConvertedTextProvider: NSObject, NSPasteboardItemDataProvider {
-        private let text: String
-        private let onProvided: () -> Void
+    /// Only an explicitly rejected write permits a second replacement mechanism.
+    enum ReplacementResult: Equatable { case applied, rejected, uncertain }
 
-        init(text: String, onProvided: @escaping () -> Void) {
-            self.text = text
-            self.onProvided = onProvided
+    static func replacementResult(write: () -> AXError, verified: () -> Bool) -> ReplacementResult {
+        switch write() {
+        case .attributeUnsupported, .notImplemented: return .rejected
+        case .success: return verified() ? .applied : .uncertain
+        default: return .uncertain
         }
+    }
 
-        func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem,
-                        provideDataForType type: NSPasteboard.PasteboardType) {
-            item.setString(text, forType: type)
-            onProvided()
+    static func expectedReplacementValue(value: String?, range: CFRange?,
+                                         original: String, replacement: String) -> String? {
+        guard let value, let range, range.location >= 0, range.length > 0 else { return nil }
+        let text = value as NSString
+        guard range.location <= text.length, range.length <= text.length - range.location else {
+            return nil
         }
+        let selected = NSRange(location: range.location, length: range.length)
+        guard text.substring(with: selected) == original else { return nil }
+        return text.replacingCharacters(in: selected, with: replacement)
+    }
+
+    private static func stringAttribute(_ element: AXUIElement, _ attribute: String) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success
+        else { return nil }
+        return value as? String
     }
 
     /// Replace the selection in place, for the apps whose focused element accepts a write
@@ -285,22 +297,20 @@ enum SelectionCorrector {
     /// `AXError.success` on its own is not proof of anything: a real app, live-tested,
     /// reported success on every call while the on-screen text never changed at all — some
     /// AX bridges (web content in particular) accept the write and silently drop it. The
-    /// only way to catch that is to read the attribute straight back and check it actually
-    /// moved off the original text; a bridge that cannot be read back at all is treated the
-    /// same as one that lied, since there is nothing here to trust either way.
+    /// result must match the expected replacement, not merely differ from the original.
+    /// An unreadable or unchanged result is uncertain: never follow it with another write.
     static func replaceSelectionViaAccessibility(
-        _ element: AXUIElement, replacing original: String, with text: String
-    ) -> Bool {
-        guard AXUIElementSetAttributeValue(
-            element, kAXSelectedTextAttribute as CFString, text as CFTypeRef
-        ) == .success else { return false }
-
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(
-                element, kAXSelectedTextAttribute as CFString, &value) == .success,
-              let readBack = value as? String
-        else { return false }
-        return readBack != original
+        _ element: AXUIElement, with text: String, verified: () -> Bool
+    ) -> ReplacementResult {
+        var settable = DarwinBoolean(false)
+        let status = AXUIElementIsAttributeSettable(element, kAXSelectedTextAttribute as CFString,
+                                                   &settable)
+        if status == .attributeUnsupported || status == .notImplemented
+            || (status == .success && !settable.boolValue) { return .rejected }
+        guard status == .success else { return .uncertain }
+        return replacementResult(write: {
+            AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
+        }, verified: verified)
     }
 
     /// The selected text of the focused element in the frontmost app, if it publishes one.
@@ -336,7 +346,7 @@ enum SelectionCorrector {
         return range
     }
 
-    private static func contextMatches(_ original: EditingContext) -> Bool {
+    private static func contextMatches(_ original: EditingContext, checkRange: Bool = true) -> Bool {
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == original.pid else {
             return false
         }
@@ -344,7 +354,7 @@ enum SelectionCorrector {
         switch (original.focusedElement, current) {
         case let (lhs?, rhs?):
             guard CFEqual(lhs, rhs) else { return false }
-            if let before = original.selectedRange {
+            if checkRange, let before = original.selectedRange {
                 guard let now = selectedRange(rhs) else { return false }
                 return before.location == now.location && before.length == now.length
             }

@@ -349,6 +349,10 @@ final class KeyboardMonitor {
             // queue prevents a processed invalidation from slipping between the two.
             let sent = DispatchQueue.main.sync {
                 guard self.operation.canContinue else { return false }
+                guard SecureInputDetector.current() == .notSecure else {
+                    self.operation.invalidate()
+                    return false
+                }
                 guard Self.modifiersAreReleased else {
                     self.operation.invalidate()
                     return false

@@ -371,18 +371,20 @@ what the exceptions editor was until it was moved into one.
    on `kAXSelectedTextAttribute`, which is instant and never touches the pasteboard. This
    was found to be **not trustworthy on its own**: a real app, live-tested, returned
    `AXError.success` on every write while the on-screen text never changed — the fallback
-   never even ran, since the (correct) success report short-circuited it. Every write is
-   now followed by a read-back of the same attribute, trusted only when it no longer
-   equals the original selection; a bridge that cannot be read back at all is treated the
-   same as one caught lying. Most browsers and editors do not support the write (nor do
-   they publish `AXSelectedText` for reading) and fail this cleanly, so the fallback for
-   both directions is ⌘C/⌘V; the original pasteboard is snapshotted and restored, but the
-   converted text is briefly on it. The write-back for
-   ⌘V is a *promised* `NSPasteboardItem` (`SelectionCorrector.ConvertedTextProvider`), not
-   a plain string with a timer: two rounds of a fixed restore delay guessing wrong on a
-   slow first paste both landed the pre-existing clipboard in place of the conversion, and
-   a promise calls back when something actually reads the data instead of guessing when
-   that happened. A generous backstop (2s) restores anyway if nothing ever reads it
+   never even ran. Writes now require the exact expected field value (computed from the
+   original UTF-16 selection range), or the exact converted selected text when the full
+   value is unavailable. An accepted but unverified write is **uncertain**, never permission
+   to paste again: it may already have replaced the text and collapsed the selection.
+   Only explicitly unsupported writes use the ⌘V fallback. `SelectionPasteTransaction`
+   keeps that operation active until verification or failure, and restores the original
+   clipboard only after the target text is verified and only if clipboard ownership has
+   not changed. Clipboard reads are not acknowledgements: history utilities can read a
+   promise before the target app does. There are no reader-triggered restore timers.
+   **On cancellation or the 2s verification timeout, converted text remains on the clipboard**
+   (unless someone copied newer data); restoring old data could feed it to a delayed paste.
+   Such attempts do not increment statistics or teach words. Editors without readable AX
+   text may paste successfully but cannot be confirmed, so this conservative fallback
+   leaves the converted clipboard intact and reports an unconfirmed result.
 8. **A selection conversion teaches the target dictionary**, not the exceptions list.
    Automatic detection needs the other-layout reading to be a real word; a brand or an
    identifier fails that in every dictionary this app has, so no amount of manual fixing
@@ -416,7 +418,7 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (286 tests, 39 suites) — run it more than
+- [ ] Unit tests in `run-tests.sh` all pass (300 tests, 41 suites) — run it more than
       once when a suite touching TIS was added; the crash is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary

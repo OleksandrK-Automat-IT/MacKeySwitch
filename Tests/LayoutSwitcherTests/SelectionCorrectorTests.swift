@@ -37,26 +37,70 @@ import Testing
         // either; this exercises exactly the AXError path every genuinely unsupported app
         // takes, without needing one running.
         let element = AXUIElementCreateSystemWide()
-        #expect(!SelectionCorrector.replaceSelectionViaAccessibility(
-            element, replacing: "ghbdsn", with: "привіт"))
+        #expect(SelectionCorrector.replaceSelectionViaAccessibility(
+            element, with: "привіт", verified: { false }) != .applied)
     }
 
-    @Test func aPromisedItemDeliversItsTextOnlyWhenSomethingReadsIt() {
-        // The whole point of the promise: nothing has been handed to the pasteboard yet
-        // just by writing the item, and the callback proves exactly when that changes.
+    @Test func clipboardReadersDoNotCompleteTheTransaction() throws {
         let pasteboard = NSPasteboard(name: .init("MacKeySwitchTests.promise"))
         pasteboard.clearContents()
 
-        var provided = false
-        let provider = SelectionCorrector.ConvertedTextProvider(text: "привіт") {
-            provided = true
-        }
-        let item = NSPasteboardItem()
-        item.setDataProvider(provider, forTypes: [.string])
-        pasteboard.writeObjects([item])
-
-        #expect(!provided, "writing the promise must not itself count as a read")
+        defer { pasteboard.clearContents() }
+        pasteboard.setString("original", forType: .string)
+        let saved = SelectionCorrector.snapshot(pasteboard)
+        let transaction = try #require(SelectionPasteTransaction(
+            pasteboard: pasteboard, saved: saved, text: "привіт"))
+        _ = SelectionCorrector.snapshot(pasteboard)
         #expect(pasteboard.string(forType: .string) == "привіт")
-        #expect(provided, "reading the string is what must fulfil the promise")
+        #expect(transaction.update(valid: true, verified: false, timedOut: false) == .pending)
+        #expect(transaction.update(valid: true, verified: true, timedOut: false) == .confirmed)
+        #expect(pasteboard.string(forType: .string) == "original")
+        pasteboard.clearContents()
+        pasteboard.setString("newer", forType: .string)
+        _ = transaction.update(valid: true, verified: true, timedOut: false)
+        #expect(pasteboard.string(forType: .string) == "newer")
+    }
+
+    @Test(arguments: [true, false])
+    func unconfirmedPasteNeverRestoresOldData(timeout: Bool) throws {
+        let pb = NSPasteboard(name: .init("MacKeySwitchTests.timeout.\(timeout)"))
+        defer { pb.clearContents() }
+        pb.clearContents()
+        pb.setString("original", forType: .string)
+        let transaction = try #require(SelectionPasteTransaction(
+            pasteboard: pb, saved: SelectionCorrector.snapshot(pb), text: "converted"))
+        #expect(transaction.update(valid: timeout, verified: false, timedOut: timeout) == .unconfirmed)
+        #expect(pb.string(forType: .string) == "converted")
+    }
+
+    @Test func newerClipboardSurvivesConfirmation() throws {
+        let pb = NSPasteboard(name: .init("MacKeySwitchTests.newer"))
+        defer { pb.clearContents() }
+        pb.clearContents()
+        let transaction = try #require(SelectionPasteTransaction(
+            pasteboard: pb, saved: SelectionCorrector.snapshot(pb), text: "converted"))
+        pb.clearContents()
+        pb.setString("newer", forType: .string)
+        #expect(transaction.update(valid: true, verified: true, timedOut: false) == .confirmed)
+        #expect(pb.string(forType: .string) == "newer")
+    }
+
+    @Test func uncertainAXWriteMustNotAuthorizeFallback() {
+        #expect(SelectionCorrector.replacementResult(write: { .success }, verified: { false }) == .uncertain)
+        #expect(SelectionCorrector.replacementResult(write: { .cannotComplete }, verified: { false }) == .uncertain)
+        #expect(SelectionCorrector.replacementResult(write: { .attributeUnsupported }, verified: { false }) == .rejected)
+        #expect(SelectionCorrector.replacementResult(write: { .success }, verified: { true }) == .applied)
+    }
+
+    @Test func replacementEvidenceUsesUTF16AndRequiresOriginalSelection() {
+        #expect(SelectionCorrector.expectedReplacementValue(
+            value: "🙂 ghbdsn!", range: CFRange(location: 3, length: 6),
+            original: "ghbdsn", replacement: "привіт") == "🙂 привіт!")
+        #expect(SelectionCorrector.expectedReplacementValue(
+            value: "hello", range: CFRange(location: 0, length: Int.max),
+            original: "hello", replacement: "world") == nil)
+        #expect(SelectionCorrector.expectedReplacementValue(
+            value: "hello", range: CFRange(location: 0, length: 5),
+            original: "other", replacement: "world") == nil)
     }
 }

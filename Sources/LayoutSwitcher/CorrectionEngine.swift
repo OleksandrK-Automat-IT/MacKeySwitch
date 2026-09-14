@@ -244,6 +244,7 @@ final class CorrectionEngine {
         // cheap read; the costlier accessibility query runs once per word, at the boundary.
         if environment.isSystemSecureInputEnabled {
             resetBuffer()
+            clearCorrectionSnapshot()
             return .nothing
         }
 
@@ -576,6 +577,12 @@ final class CorrectionEngine {
 
     /// The plan that reverses the last correction, if there is one recent enough.
     func undoPlan(isCorrecting: Bool) -> CorrectionPlan? {
+        guard !environment.isSystemSecureInputEnabled,
+              environment.secureFieldState() == .notSecure else {
+            resetBuffer()
+            clearCorrectionSnapshot()
+            return nil
+        }
         guard !isCorrecting, let last = lastCorrection,
               environment.now.timeIntervalSince(last.at) < Self.undoWindow,
               !last.plan.correctText.isEmpty else { return nil }
