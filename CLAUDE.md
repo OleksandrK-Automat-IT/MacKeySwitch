@@ -274,18 +274,34 @@ swift build && .build/debug/LayoutSwitcher
 (Quit the installed copy first — the single-instance guard exits the second one.)
 
 To watch the *installed* app instead, drop the debug binary into the bundle and launch it
-with stdout redirected — stdout is line-buffered from `main.swift`, so the log fills as it
-goes rather than at exit:
+through `open`, not by executing the binary directly — stdout is line-buffered from
+`main.swift`, so the log fills as it goes rather than at exit:
 
 ```bash
 cp .build/debug/LayoutSwitcher /Applications/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher
 codesign --force --deep --sign - /Applications/MacKeySwitch.app
-nohup /Applications/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher > "$TMPDIR/mks.log" 2>&1 &
+open /Applications/MacKeySwitch.app --stdout "$TMPDIR/mks.log" --stderr "$TMPDIR/mks.log"
+tail -f "$TMPDIR/mks.log"
 ```
 
-Worth remembering: three separate faults here were only found once something could
-report. If a release build silently does nothing, reproduce it with a debug build from a
-terminal before theorising — two speculative fixes shipped here for lack of that.
+**`open`, never `nohup .../LayoutSwitcher &` or a direct exec from Terminal.** A process
+launched straight from a shell has Terminal as its responsible process for TCC purposes,
+so `AXIsProcessTrustedWithOptions`'s prompt-and-register can silently attribute the
+request to Terminal instead of MacKeySwitch — no entry for MacKeySwitch ever appears in
+Accessibility, no matter how many times it is toggled, and the log repeats "Waiting for
+Accessibility permission..." forever. `open` launches it through LaunchServices, the same
+path a double-click takes, and registration works. If a stale grant from an earlier
+ad-hoc signature is in the way, `tccutil reset Accessibility com.okuzmin.mackeyswitch`
+clears it (verify with `sqlite3 ~/Library/Application\ Support/com.apple.TCC/TCC.db
+"SELECT * FROM access WHERE client LIKE '%mackeyswitch%';"` — do not attempt to *write*
+to this database; it is SIP-protected and rightly refuses it) before relaunching.
+
+Worth remembering: several separate faults here were only found once something could
+report — a debug build watched this way is what caught both `AXUIElementSetAttributeValue`
+reporting `.success` while doing nothing, and the pasteboard-restore race before it. If a
+release build silently does nothing, or a fix does not change the symptom, reproduce it
+this way and read what actually happened before changing the code again — a second and
+third blind guess at the same bug wasted real time here before this became the rule.
 
 ### What It Does NOT Touch
 - Password fields — `SecureInputDetector` asks the system (AX subrole, then the
@@ -445,6 +461,13 @@ what the exceptions editor was until it was moved into one.
    is intermittent and the corrupted read more so
 7. **Wrong UI language**: Settings → General → Interface language + restart app (no full relaunch needed)
 8. **Test framework not found**: Use `./run-tests.sh` instead of `swift test`
+9. **A debug run never gets past "Waiting for Accessibility permission..."**: it was
+   launched directly (`nohup`, a bare exec, or a raw shell command) instead of via `open`
+   — see the launch recipe under Logging. Toggling a stale checkbox in Accessibility does
+   nothing for a new ad-hoc signature either; `tccutil reset` first
+10. **A fix does not change the symptom on retry**: stop changing code and go read what
+    actually happened (see Logging) before guessing again — this exact bug report burned
+    two blind fixes in a row before a debug build's log showed the real cause
 
 ## Contact & License
 
