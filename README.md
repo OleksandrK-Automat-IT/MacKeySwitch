@@ -7,20 +7,22 @@ like Punto Switcher, but native, small, and open source.
 ## Features
 
 - **Automatic correction** — checks each word on space and corrects it if the other layout
-  makes a real word out of it.
+  makes a real word out of it and the confidence and safety checks pass.
 - **Shortcut mode** — turn the automatic pass off and correct only when you ask.
 - **Correct on demand** — `⌃⇧Space` fixes the last word even when the app was not confident
   enough to touch it on its own.
 - **Selection correction** — select any text, press `⌃⇧X`, and it is re-read in the other
   layout. Works on text you never typed. A single converted word — a name or a brand no
-  dictionary would recognise — is remembered, so the next time it is *mistyped* the
-  automatic pass catches it too.
-- **Undo** — `⌃⇧Z` reverts the last correction, and the word is remembered so it is not
-  touched again. When there is nothing to revert, the same key converts the last word,
+  dictionary would recognise — can be learned after a verified conversion. Later automatic
+  corrections still depend on the confidence and filtering rules below.
+- **Undo** — `⌃⇧Z` reverts a recent correction. Rejecting an automatic correction teaches
+  an exception; reverting a manually requested conversion does not. When there is nothing
+  to revert, the same key converts the last word,
   so one shortcut toggles the word either way.
 - **Three layouts, switched in pairs** — English (US, ABC, British and other Latin
   variants) with Ukrainian, and English with Russian. A Cyrillic word typed in English is
-  retyped in whichever Cyrillic layout you last used; a Cyrillic layout only ever goes back
+  retyped in the pinned Cyrillic layout, or the last-used one in Automatic pairing mode;
+  a Cyrillic layout only ever goes back
   to English. Ukrainian and Russian are never swapped for each other.
 - **Smart filtering** — skips password fields, URLs, emails and identifiers.
 - **App blacklist** — off by default in terminals, IDEs and code editors; any of them can be
@@ -45,6 +47,15 @@ The script builds the app, installs it into `/Applications`, registers the login
 walks you through the privacy permissions macOS requires. The permission step is necessarily
 hands-on — no app can grant it to itself.
 
+For subsequent rebuilds, preserve existing privacy grants:
+
+```sh
+./install.sh --skip-permissions
+```
+
+This still builds, installs and relaunches the app. The default permission walkthrough
+resets its Accessibility grant, so do not repeat it when the existing grant works.
+
 > **Note:** building needs a Swift toolchain — either Apple's Command Line Tools or a full
 > Xcode. The script checks for `swift` and, if it is missing, offers to install the Command
 > Line Tools, which are the smaller of the two; re-run `./install.sh` afterwards.
@@ -60,9 +71,10 @@ Other entry points:
 | `installer/build_installer.sh` | The above, plus a `.pkg` and a `.dmg` |
 | `installer/regrant-permissions.sh` | Re-grant Accessibility after a rebuild |
 
-> **Note:** without a Developer ID the app is signed ad-hoc, and that signature changes on
-> every rebuild — macOS then treats each build as a new app and forgets the Accessibility
-> grant. Either run `installer/regrant-permissions.sh` after a build, or pin an identity:
+> **Note:** without a configured signing identity or a detected Developer ID, the app is
+> signed ad-hoc, and that signature changes on
+> every rebuild — macOS may require Accessibility permission again. If the grant stops
+> working, run `installer/regrant-permissions.sh`, or pin an available signing identity:
 > `export MACKEYSWITCH_CODESIGN_IDENTITY="Apple Development: you@example.com"`
 
 ## Menu bar
@@ -71,8 +83,10 @@ The icon is the flag of the current layout. The menu has:
 
 - **Enabled** toggle
 - **Undo Last Switch**
-- Current layout and a correction counter
+- Enabled input sources: click a layout to select it; the current one is checked
+- Switching-pair submenu and a session correction counter
 - **Settings...**
+- **Quit**
 
 ## Settings
 
@@ -88,6 +102,9 @@ The icon is the flag of the current layout. The menu has:
 
 ### Shortcuts via Terminal
 
+Quit the app before editing its preferences, then relaunch it. These commands restore
+all three default bindings; modifiers must be set as well as key codes:
+
 ```sh
 # Correct the last word — default ⌃⇧Space
 defaults write com.okuzmin.mackeyswitch correctWordHotkeyKeyCode -int 49
@@ -95,9 +112,11 @@ defaults write com.okuzmin.mackeyswitch correctWordHotkeyModifiers -int 393216
 
 # Undo — default ⌃⇧Z
 defaults write com.okuzmin.mackeyswitch undoHotkeyKeyCode -int 6
+defaults write com.okuzmin.mackeyswitch undoHotkeyModifiers -int 393216
 
 # Convert selection — default ⌃⇧X
 defaults write com.okuzmin.mackeyswitch selectionHotkeyKeyCode -int 7
+defaults write com.okuzmin.mackeyswitch selectionHotkeyModifiers -int 393216
 ```
 
 Settings has a recorder for all three, which is easier.
@@ -123,42 +142,64 @@ imported, then to the macOS spelling dictionaries.
 The Dictionary tab takes any UTF-8 text file with one word per line. Choose it with **Add
 Dictionary File…** or drag it onto the window; the app reads it first and tells you what it
 found — how many words, in which language, and how many lines it could not use. The
-language is detected from the alphabets and shown in a menu you can correct, so a list
-never lands in the wrong dictionary by accident. Imported files are remembered and reloaded
+language is estimated from the alphabets and shown in a menu you can correct. Check that
+choice before importing, especially for ambiguous Cyrillic lists. Imported files are remembered and reloaded
 at every launch, and the tab shows what each language currently knows.
 
-Larger source lists for all three languages are in [`dictionaries/`](dictionaries/) — the
-full inflected forms the bundled lists are generated from. They are not compiled into the
-app; import one if you want the coverage.
+Larger input lists for all three languages are in [`dictionaries/`](dictionaries/) —
+spelling lists and a curated Russian frequency list used to build the bundled dictionaries.
+They are not compiled into the app; import one if you want the coverage.
+
+### Selection conversion and the clipboard
+
+Accessibility replacement is preferred and must be verified against the expected text.
+An accepted but unverified write is not followed by another paste, because it may already
+have changed the text. Explicitly unsupported writes fall back to Copy/Paste.
+
+During a fallback paste, another selection conversion is blocked until confirmation or
+failure. The original clipboard is restored only after the target text is verified, and
+only if no newer clipboard data has arrived. Clipboard-history readers are not proof that
+the target app pasted.
+
+If verification times out after two seconds or the operation is cancelled, the converted
+text stays on the clipboard unless newer data replaced it. This prevents a delayed Paste
+from inserting the old clipboard. Editors without readable Accessibility text may complete
+the paste without allowing verification; those attempts do not teach words or increment
+statistics.
 
 Missing a correction is a nuisance; rewriting correct input destroys it. Where the evidence
 cannot tell the two apart, the text is left alone.
 
-## What it will not touch
+## Automatic-correction exclusions
+
+Manual conversion deliberately bypasses confidence scoring; these are the automatic
+pass's exclusions, not a promise that explicit selection conversion applies every filter.
 
 - Password fields — detected through the system, not guessed from the characters
 - URLs, emails and identifier-shaped text
 - Words in excluded apps
 - Words you have already rejected
-- The first word after you switch layouts by hand
+- The first word started within two seconds after you switch layouts by hand
 - Words with a dead key anywhere but the end (`--print-diagnostics` lists your layout's)
 
 ## Troubleshooting
 
 **Corrections stopped after a rebuild.** The Accessibility grant is the first suspect —
-an ad-hoc signature changes with every build. See *About signing* above.
+an ad-hoc signature changes with every build. See the signing note under Installation.
 
-**A shortcut does nothing.** Check Settings → General that it is still bound; Carbon
-refuses a combination another app already owns, and does so silently.
+**A shortcut does nothing.** Check Settings → Shortcuts for its binding and registration
+error. Release the shortcut's modifiers within one second; a held chord cancels the
+operation. A combination owned by another app may fail to register.
 
 **Which layouts and dead keys the app sees:**
 
 ```sh
-MacKeySwitch.app/Contents/MacOS/LayoutSwitcher --print-diagnostics
+/Applications/MacKeySwitch.app/Contents/MacOS/LayoutSwitcher --print-diagnostics
 ```
 
-Release builds keep no log. For a closer look, build debug and run the binary from a
-terminal — it prints what it decides and why:
+Release builds have no persistent diagnostic log. For a closer look, quit the installed
+copy first, then build debug and run the binary from a terminal — it prints what it
+decides and why. A second instance exits without starting another monitor:
 
 ```sh
 swift build && .build/debug/LayoutSwitcher
@@ -169,6 +210,8 @@ swift build && .build/debug/LayoutSwitcher
 ```sh
 swift build
 ./run-tests.sh
+swift build -c release
+./run-tests.sh -c release
 ```
 
 Use `run-tests.sh` rather than `swift test`: with the Command Line Tools selected instead of
@@ -179,7 +222,7 @@ a full Xcode, SwiftPM cannot find `Testing.framework` and quietly builds a runne
 
 Interface strings are in `Sources/LayoutSwitcher/Resources/<code>.lproj/Localizable.strings`.
 Copy `en.lproj`, translate the values, add the code to `AppLanguage`, and list it in
-`Package.swift` and `installer/build_app.sh`. `LocalizationTests` fails the build if a table
+`Package.swift` and `installer/build_app.sh`. `LocalizationTests` fails the test run if a table
 loses a key or changes a format specifier.
 
 ## Licence

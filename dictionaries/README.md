@@ -1,13 +1,16 @@
 # Optional word lists
 
-The full source lists the bundled dictionaries are generated from. They are kept here as
+The input lists used to generate the bundled dictionaries. English and Ukrainian are
+larger spelling lists; Russian is a curated frequency-ranked subset, not the full upstream
+dictionary. They are kept here as
 files rather than compiled in: together they are ~11 MB, against the 100k frequency-ranked
 lists in `Sources/LayoutSwitcher/Resources` that cover ordinary vocabulary at a fraction of
 the size. Nothing here is loaded unless you import it.
 
-Two uses. `Scripts/build_frequency_dictionaries.py` reads them to regenerate the bundled
-lists — see `Scripts/README.md`. And you can import one into the app directly, to trade
-size for coverage: every inflected form the frequency ranking left out.
+Two uses. [`Scripts/build_frequency_dictionaries.py`](../Scripts/build_frequency_dictionaries.py)
+reads them to regenerate the bundled lists — see [the generator README](../Scripts/README.md).
+You can also import one into the app directly for additional forms omitted from the bundled
+100,000-word lists, subject to the importer's validation rules.
 
 **To use one:** Settings → Dictionary → *Add Dictionary File…*, or drag the file onto the
 window. The app reads it, names its language, and says how many words it found. Imported
@@ -15,7 +18,7 @@ files are remembered and reloaded at every launch.
 
 ## What is here
 
-| File | Words | Language |
+| File | Entries in file | Language |
 | --- | --- | --- |
 | `english-words-alpha.txt` | 370,105 | English |
 | `ukrainian-words-v10.txt` | 256,499 | Ukrainian |
@@ -33,6 +36,9 @@ dictionary as one word and could not be matched anyway.
 
 Each file keeps the licence of the project it came from. None of them is covered by this
 repository's GPL-3.0.
+
+Frequency-derived data has additional attribution and licensing information in
+[DICTIONARY-NOTICES.md](../Sources/LayoutSwitcher/Resources/DICTIONARY-NOTICES.md).
 
 ### English — `english-words-alpha.txt`
 - Source: https://github.com/dwyl/english-words, file `words_alpha.txt`
@@ -52,7 +58,7 @@ repository's GPL-3.0.
   commit `69a18ae079084f11569f5190ac2080289055ef5e`
 - Upstream artifact: `cspell/dictionaries/ru_RU.txt.gz`
 - Licence: Mozilla Public License 2.0
-- Processing: decompressed, lowercased, limited to Russian letters and apostrophes,
-  deduplicated, sorted by UTF-8 byte order. Hyphenated forms were excluded for the reason
-  given above
+- Processing: curated frequency-ranked list of 150,000 words plus 14 additional technical
+  entries, lowercased and deduplicated, limited to Russian letters and apostrophes. This is
+  not an alphabetically sorted dump of the upstream artifact. Hyphenated forms are excluded
 - SHA-256: `7443375c2b016984a3f708d466c0933ac4065b6cf243e08a581c2b854a9455c3`
