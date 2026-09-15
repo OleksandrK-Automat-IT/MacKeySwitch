@@ -386,22 +386,28 @@ what the exceptions editor was until it was moved into one.
 7. **Selection conversion prefers writing through Accessibility**, `AXUIElementSetAttributeValue`
    on `kAXSelectedTextAttribute`, which is instant and never touches the pasteboard. This
    was found to be **not trustworthy on its own**: a real app, live-tested, returned
-   `AXError.success` on every write while the on-screen text never changed — the fallback
-   never even ran. Writes now require the exact expected field value (computed from the
-   original UTF-16 selection range), or the exact converted selected text when the full
-   value is unavailable. An accepted but unverified write is **uncertain**, never permission
-   to paste again: it may already have replaced the text and collapsed the selection.
-   Reading uses AXSelectedText or AXValue plus the captured UTF-16 selection range, never
-   Cmd+C: an unrelated clipboard write must not become replacement text. Unsupported or
-   inconsistent selection reads fail without modifying text or clipboard. Concrete source
-   IDs are passed to LayoutTransliterator in both directions; punctuation is excluded from
-   language voting. Only explicitly unsupported writes use the ⌘V fallback. `SelectionPasteTransaction`
-   keeps that operation active until verification or failure, and restores the original
-   clipboard only after the target text is verified and only if clipboard ownership has
-   not changed. Clipboard reads are not acknowledgements: history utilities can read a
-   promise before the target app does. There are no reader-triggered restore timers.
-   **On cancellation or the 2s verification timeout, converted text remains on the clipboard**
-   (unless someone copied newer data); restoring old data could feed it to a delayed paste.
+   `AXError.success` on every write while the on-screen text never changed — a later
+   rewrite that made *every* path require this same verification then broke the shortcut
+   the other way, for every app that cannot be read back through AX at all (browsers, most
+   Electron apps) — the population the clipboard fallback exists for in the first place.
+   Both directions read/write through AX when available: writes require the exact expected
+   field value (computed from the original UTF-16 selection range), or the exact converted
+   selected text when the full value is unavailable; an accepted but unverified write is
+   **uncertain**, never permission to fall back to the clipboard — it may already have
+   replaced the text and collapsed the selection, and a second write risks colliding with
+   it. Reading tries `AXSelectedText`/`AXValue` first and **falls back to Cmd+C** when an
+   element publishes neither — removing that fallback (to make reading "provably AX-only")
+   silently broke ⌃⇧X in exactly those apps; the read is not the unreliable half, the
+   *verification* of a write is, and only a `.rejected` write (not merely one that could
+   not be read back) is allowed to fall through to the clipboard.
+   Concrete source IDs are passed to `LayoutTransliterator` in both directions; punctuation
+   is excluded from language voting. The clipboard path itself is a **promised**
+   `NSPasteboardItem` (`SelectionCorrector.ConvertedTextProvider`), not a plain string with
+   a timer: a fixed restore delay guessing wrong on a slow first paste twice landed the
+   pre-existing clipboard in place of the conversion (see the Logging section on why a
+   debug build, not another guess, is what actually found that), and a promise calls back
+   when something actually reads the data instead of guessing when that happened. A
+   generous 2s backstop restores the original clipboard anyway if nothing ever reads it.
    Such attempts do not increment statistics or teach words. Editors without readable AX
    text may paste successfully but cannot be confirmed, so this conservative fallback
    leaves the converted clipboard intact and reports an unconfirmed result.
@@ -438,7 +444,7 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (306 tests, 41 suites) — run it more than
+- [ ] Unit tests in `run-tests.sh` all pass (304 tests, 41 suites) — run it more than
       once when a suite touching TIS was added; the crash is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary

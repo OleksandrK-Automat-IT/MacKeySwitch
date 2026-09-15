@@ -60,48 +60,23 @@ import Testing
             element, with: "привіт", verified: { false }) != .applied)
     }
 
-    @Test func clipboardReadersDoNotCompleteTheTransaction() throws {
+    @Test func aPromisedItemDeliversItsTextOnlyWhenSomethingReadsIt() {
+        // The whole point of the promise: nothing has been handed to the pasteboard yet
+        // just by writing the item, and the callback proves exactly when that changes.
         let pasteboard = NSPasteboard(name: .init("MacKeySwitchTests.promise"))
         pasteboard.clearContents()
 
-        defer { pasteboard.clearContents() }
-        pasteboard.setString("original", forType: .string)
-        let saved = SelectionCorrector.snapshot(pasteboard)
-        let transaction = try #require(SelectionPasteTransaction(
-            pasteboard: pasteboard, saved: saved, text: "привіт"))
-        _ = SelectionCorrector.snapshot(pasteboard)
+        var provided = false
+        let provider = SelectionCorrector.ConvertedTextProvider(text: "привіт") {
+            provided = true
+        }
+        let item = NSPasteboardItem()
+        item.setDataProvider(provider, forTypes: [.string])
+        pasteboard.writeObjects([item])
+
+        #expect(!provided, "writing the promise must not itself count as a read")
         #expect(pasteboard.string(forType: .string) == "привіт")
-        #expect(transaction.update(valid: true, verified: false, timedOut: false) == .pending)
-        #expect(transaction.update(valid: true, verified: true, timedOut: false) == .confirmed)
-        #expect(pasteboard.string(forType: .string) == "original")
-        pasteboard.clearContents()
-        pasteboard.setString("newer", forType: .string)
-        _ = transaction.update(valid: true, verified: true, timedOut: false)
-        #expect(pasteboard.string(forType: .string) == "newer")
-    }
-
-    @Test(arguments: [true, false])
-    func unconfirmedPasteNeverRestoresOldData(timeout: Bool) throws {
-        let pb = NSPasteboard(name: .init("MacKeySwitchTests.timeout.\(timeout)"))
-        defer { pb.clearContents() }
-        pb.clearContents()
-        pb.setString("original", forType: .string)
-        let transaction = try #require(SelectionPasteTransaction(
-            pasteboard: pb, saved: SelectionCorrector.snapshot(pb), text: "converted"))
-        #expect(transaction.update(valid: timeout, verified: false, timedOut: timeout) == .unconfirmed)
-        #expect(pb.string(forType: .string) == "converted")
-    }
-
-    @Test func newerClipboardSurvivesConfirmation() throws {
-        let pb = NSPasteboard(name: .init("MacKeySwitchTests.newer"))
-        defer { pb.clearContents() }
-        pb.clearContents()
-        let transaction = try #require(SelectionPasteTransaction(
-            pasteboard: pb, saved: SelectionCorrector.snapshot(pb), text: "converted"))
-        pb.clearContents()
-        pb.setString("newer", forType: .string)
-        #expect(transaction.update(valid: true, verified: true, timedOut: false) == .confirmed)
-        #expect(pb.string(forType: .string) == "newer")
+        #expect(provided, "reading the string is what must fulfil the promise")
     }
 
     @Test func uncertainAXWriteMustNotAuthorizeFallback() {
