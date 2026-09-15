@@ -60,30 +60,25 @@ import Testing
             element, with: "привіт", verified: { false }) != .applied)
     }
 
-    @Test func aPromisedItemDeliversItsTextOnlyWhenSomethingReadsIt() {
-        // The whole point of the promise: nothing has been handed to the pasteboard yet
-        // just by writing the item, and the callback proves exactly when that changes.
-        let pasteboard = NSPasteboard(name: .init("MacKeySwitchTests.promise"))
-        pasteboard.clearContents()
-
-        var provided = false
-        let provider = SelectionCorrector.ConvertedTextProvider(text: "привіт") {
-            provided = true
-        }
-        let item = NSPasteboardItem()
-        item.setDataProvider(provider, forTypes: [.string])
-        pasteboard.writeObjects([item])
-
-        #expect(!provided, "writing the promise must not itself count as a read")
-        #expect(pasteboard.string(forType: .string) == "привіт")
-        #expect(provided, "reading the string is what must fulfil the promise")
-    }
-
     @Test func uncertainAXWriteMustNotAuthorizeFallback() {
         #expect(SelectionCorrector.replacementResult(write: { .success }, verified: { false }) == .uncertain)
         #expect(SelectionCorrector.replacementResult(write: { .cannotComplete }, verified: { false }) == .uncertain)
         #expect(SelectionCorrector.replacementResult(write: { .attributeUnsupported }, verified: { false }) == .rejected)
         #expect(SelectionCorrector.replacementResult(write: { .success }, verified: { true }) == .applied)
+    }
+
+    @Test func aWriteThatProvablyChangedNothingFallsBackInstead() {
+        // Live-tested: a real AX bridge returned a non-rejection AXError while the field
+        // read back as exactly the untouched original — .uncertain would have refused the
+        // clipboard fallback for a write that demonstrably never happened.
+        #expect(SelectionCorrector.replacementResult(
+            write: { .cannotComplete }, verified: { false }, unchanged: { true }) == .rejected)
+        #expect(SelectionCorrector.replacementResult(
+            write: { .success }, verified: { false }, unchanged: { true }) == .rejected)
+        // Unchanged does not override a genuine partial/garbled write: only a clean
+        // rejection or a provable no-op may fall through.
+        #expect(SelectionCorrector.replacementResult(
+            write: { .cannotComplete }, verified: { false }, unchanged: { false }) == .uncertain)
     }
 
     @Test func replacementEvidenceUsesUTF16AndRequiresOriginalSelection() {

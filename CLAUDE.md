@@ -401,16 +401,23 @@ what the exceptions editor was until it was moved into one.
    *verification* of a write is, and only a `.rejected` write (not merely one that could
    not be read back) is allowed to fall through to the clipboard.
    Concrete source IDs are passed to `LayoutTransliterator` in both directions; punctuation
-   is excluded from language voting. The clipboard path itself is a **promised**
-   `NSPasteboardItem` (`SelectionCorrector.ConvertedTextProvider`), not a plain string with
-   a timer: a fixed restore delay guessing wrong on a slow first paste twice landed the
-   pre-existing clipboard in place of the conversion (see the Logging section on why a
-   debug build, not another guess, is what actually found that), and a promise calls back
-   when something actually reads the data instead of guessing when that happened. A
-   generous 2s backstop restores the original clipboard anyway if nothing ever reads it.
-   Such attempts do not increment statistics or teach words. Editors without readable AX
-   text may paste successfully but cannot be confirmed, so this conservative fallback
-   leaves the converted clipboard intact and reports an unconfirmed result.
+   is excluded from language voting.
+
+   A write that is not a clean rejection but leaves the field reading back as *exactly*
+   the untouched original is treated the same as `.rejected`, not `.uncertain` — live-tested
+   the other way once too: a bridge returned a non-rejection `AXError` while the field
+   provably never changed, and refusing the clipboard fallback for a write that
+   demonstrably never happened left the shortcut doing nothing at all.
+
+   The clipboard path writes a plain string and restores the original clipboard after one
+   fixed, generous delay (2s) — it does **not** try to detect when the paste completed. A
+   promised `NSPasteboardItem` was tried first and measured live to fail: its data provider
+   fired 57ms after the write, on the *general* pasteboard, which has readers this app
+   never posted a paste to — Universal Clipboard/Handoff, any clipboard-history utility —
+   either of which can fulfil a promise within milliseconds of the write, long before a
+   real target app has processed a synthetic ⌘V. There is no available signal on the
+   general pasteboard that distinguishes "the target app read this" from "something else
+   touched the pasteboard", so this stopped trying to be clever about it.
 8. **A selection conversion teaches the target dictionary**, not the exceptions list.
    Automatic detection needs the other-layout reading to be a real word; a brand or an
    identifier fails that in every dictionary this app has, so no amount of manual fixing
@@ -474,10 +481,18 @@ what the exceptions editor was until it was moved into one.
 9. **A debug run never gets past "Waiting for Accessibility permission..."**: it was
    launched directly (`nohup`, a bare exec, or a raw shell command) instead of via `open`
    — see the launch recipe under Logging. Toggling a stale checkbox in Accessibility does
-   nothing for a new ad-hoc signature either; `tccutil reset` first
-10. **A fix does not change the symptom on retry**: stop changing code and go read what
-    actually happened (see Logging) before guessing again — this exact bug report burned
-    two blind fixes in a row before a debug build's log showed the real cause
+   nothing for a new ad-hoc signature either; `tccutil reset Accessibility <bundle id>` first
+10. **Accessibility is trusted but the event tap still won't stay enabled** ("Event tap was
+    disabled; re-enabled FAILED" on repeat, so no automatic correction fires even though
+    ⌃⇧X and the other shortcuts work): a *second*, separate TCC service — Input Monitoring
+    (`kTCCServiceListenEvent`) — backs the tap, and resetting only Accessibility leaves it
+    stale from an earlier ad-hoc signature. `installer/regrant-permissions.sh` resets and
+    walks through both; resetting Accessibility alone during a debug session, repeatedly,
+    is how this was missed for an entire session
+11. **A fix does not change the symptom on retry**: stop changing code and go read what
+    actually happened (see Logging) before guessing again — the two bugs above between
+    them burned four blind fixes in a row before a debug build's log showed the real cause
+    each time
 
 ## Contact & License
 
