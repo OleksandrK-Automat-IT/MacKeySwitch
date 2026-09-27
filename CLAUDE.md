@@ -145,6 +145,19 @@ swift build              # Debug build
 swift build -c release   # Release build
 ```
 
+**As of macOS 27 / Swift 6.4 on this machine, `swift build` does not compile at all**:
+every `@State`/`@FocusState` in `SettingsView.swift` fails with `external macro
+implementation type 'SwiftUIMacros.StateMacro' could not be found for macro 'State()'`.
+Verified with a clean `.build`, so it is not a stale cache. Command Line Tools' plugin
+directory (`.../usr/lib/swift/host/plugins/`) has `libObservationMacros.dylib` and
+`libSwiftMacros.dylib` but **no SwiftUI macro plugin at all** — that one ships with
+Xcode.app, not the standalone Command Line Tools package, and this project has had no
+Xcode.app since early in its history (see "чи потрібно обовʼязково Command Line Tools?"
+in the project history — the answer used to be yes, CLT alone was enough; a newer
+toolchain is what changed). Until Xcode.app is reinstalled or CLT starts shipping the
+plugin, neither `swift build` nor `./run-tests.sh` can be verified on this machine — say
+so plainly rather than reporting a build or test result you were not able to produce.
+
 ### Testing
 ```bash
 ./run-tests.sh           # Must use this, not `swift test` directly
@@ -434,6 +447,12 @@ what the exceptions editor was until it was moved into one.
    the second is up, the plan is abandoned** — running it anyway was the very fault the
    wait exists to prevent, and a missed correction beats a mangled one. Automatic
    corrections do not wait: space carries no modifier, and the wait would cost them speed
+10. **Command Line Tools alone can stop being enough.** It was sufficient for years — the
+    project deliberately has no Xcode.app — but a Swift 6.4 / macOS 27 toolchain update
+    on this machine left CLT without the SwiftUI macro plugin `@State`/`@FocusState` now
+    require, so `swift build` fails outright (see Building above). This is an environment
+    fact, not a code regression: do not "fix" it by rewriting `SettingsView.swift` away
+    from `@State`, and do not report a test count without having actually run the suite
 
 ## Common Tasks & Commands
 
@@ -451,8 +470,10 @@ what the exceptions editor was until it was moved into one.
 
 ## Testing Coverage Checklist
 
-- [ ] Unit tests in `run-tests.sh` all pass (304 tests, 41 suites) — run it more than
-      once when a suite touching TIS was added; the crash is intermittent
+- [ ] Unit tests in `run-tests.sh` all pass (304 tests, 41 suites as of commit `e90f292`;
+      unverifiable on this machine right now — see the Command Line Tools note under
+      Building) — run it more than once when a suite touching TIS was added; the crash
+      is intermittent
 - [ ] Localization tests verify all tables complete and format-correct
 - [ ] Frequency dictionary tests verify generated corpus invariants and core vocabulary
 - [ ] Password heuristic tests cover edge cases
